@@ -1,0 +1,72 @@
+# Tidy epicollect data
+
+library(here)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+
+raw_epi <- read_csv(here("data/field_sample_meta/form-1__radiometer.csv"))
+glimpse(raw_epi)
+
+epi_select <- raw_epi %>% 
+  # rename for convenience
+  rename(datetime = created_at, 
+         sample_id = `1_ID`, 
+         lat = lat_2_coords, 
+         lon = long_2_coords,
+         scan_strings = `5_notes`, # the sed file number
+         container_type = `6_algae_container_ty`,
+         weight_g = `7_wt_g`) %>% 
+  # discard unused cols
+  select(datetime, sample_id, lon, lat, scan_strings, container_type, weight_g) %>% 
+  # extract date
+  mutate(date = as_date(datetime),
+         sample_id = sample_id %>% tolower(),
+         .keep = "unused",
+         .after = sample_id) 
+epi_select
+
+
+# what is the mean snow density? assuming pi*5cm^2 * 2 cm volume = 157 ml
+epi_select %>% 
+  mutate(snow_density = weight_g/157) %>% # in g/ml, see wiki firn snow density
+  select(sample_id, snow_density) %>% 
+  ggplot(aes(snow_density)) +
+  geom_histogram()
+
+# the tidy_radiometer data are grouped by scan_id, in the format 20210803_00001
+# split each string into chr vector containg each scan_id that pertains to that sample  
+
+# # test
+# "sed 111-113" %>% 
+#   str_extract_all("[:digit:]+") %>% 
+#   unlist() %>% 
+#   as.numeric() %>% 
+#   reduce(seq)
+# # end test
+
+get_vec_of_scan_ids <- function(str){
+  str %>% 
+    str_extract_all("[:digit:]+") %>% 
+    unlist() %>% 
+    as.numeric() %>% 
+    reduce(seq) %>% 
+    map_chr(str_pad, 5, pad = "0")
+}
+# "sed 111-113" %>% get_vec_of_scan_ids() #test
+
+# apply the function to the list
+scan_str_list <- epi_select$scan_strings %>% 
+  as.list() %>% 
+  map(get_vec_of_scan_ids)
+
+epi_scan_id <- epi_select %>% 
+  mutate(scan_strings = scan_str_list) %>% # replace the old with the new list, better way to do this?
+  unnest_longer(scan_strings) %>% 
+  mutate(scan_id = str_glue("{date}_{scan_strings}") %>% 
+           str_remove_all("-"),
+         .keep = "unused")
+
+epi_scan_id %>% 
+  filter(!str_detect(scan_id, "NA")) %>% 
+  write_csv(here("data/field_sample_meta/tidy_epicollect.csv"))

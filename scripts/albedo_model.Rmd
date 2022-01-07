@@ -1,0 +1,487 @@
+---
+title: "Algae albedo model"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(broom)
+library(readxl)
+library(ggpubr)
+library(cowplot)
+```
+
+
+```{r}
+albedo <- read_csv(here("data/radiometer/as_bb_albedo.csv"))
+v_albedo <- read_csv(here("data/radiometer/as_viz_albedo.csv"))
+nir_albedo <- read_csv(here("data/radiometer/as_nir_albedo.csv"))
+
+biomass <- read_csv(here("data/biomass/tidy_biomass.csv")) # in units of mg/sq m
+# use the processed data from algae abundance model
+cc <- read_csv(here("data/cellcount/cell_long.csv")) 
+rgnd <- read_csv(here("data/radiometer/as_s2_indices.csv"))
+
+# IRF
+scans <- read_csv(here("data/radiometer/sample_scans.csv"))
+solar_rad <- read_excel(here("data/PVL_SpectrumCalculator2.xlsx"), sheet = 3)
+```
+# tidy
+```{r}
+albedo_wide <- albedo %>% 
+  group_by(sample_id) %>% 
+  summarise(mean_albedo = mean(albedo), sd_albedo = sd(albedo))
+albedo_wide
+
+v_albedo_wide <- v_albedo %>% 
+  group_by(sample_id) %>% 
+  summarise(mean_vis_albedo = mean(albedo), sd_vis_albedo = sd(albedo))
+v_albedo_wide
+
+nir_albedo_wide <- nir_albedo %>% 
+  group_by(sample_id) %>% 
+  summarise(mean_nir_albedo = mean(albedo), sd_nir_albedo = sd(albedo))
+
+all_albedo <- left_join(albedo_wide, v_albedo_wide, by = "sample_id") %>%
+  left_join(nir_albedo_wide, by = "sample_id")
+all_albedo
+```
+
+
+
+```{r}
+cc_wide <- cc %>% 
+  pivot_wider(names_from= name, values_from = c("mean", "sd"))
+
+mass_wide <- biomass %>% 
+  select(sample_id, toc_g_per_m2)
+
+rgnd_wide <- rgnd %>% 
+  filter(name=="rgnd") %>% 
+  select(-name) %>% 
+  rename(mean_rgnd = mean, sd_rgnd = sd)
+
+dat <- all_albedo %>% 
+  left_join(cc_wide) %>% 
+  left_join(rgnd_wide) %>% 
+  left_join(mass_wide) %>% 
+  # shorten the sample ID for plotting
+  mutate(sample_id = sample_id %>% str_remove("21.0"),# Remove the 21. from the sample IDs
+         sample_id = sample_id %>% str_remove("21."))
+dat
+```
+
+## annotate
+```{r}
+dirty_snow_samples <- c("bdw9", "whi10", "tri14")
+
+dat2 <- dat %>% 
+  mutate(type = case_when(mean_frac_red <0.01 ~ "white",
+                          sample_id %in% dirty_snow_samples ~ "dirty",
+                          TRUE ~ "red"),
+         # convert from fraction to percent
+         frac_red_percent = mean_frac_red * 100,
+         frac_red_percent_sd = sd_frac_red * 100)
+dat2
+```
+
+
+
+
+# plot
+
+
+## Fig 3, albedo vs algae abundance, and albedo vs RGND
+
+plot template function
+```{r}
+my_plot <- function(dat, x, y, xsd, ysd, formula){
+  x <- enquo(x)
+  y <- enquo(y)
+  xsd <- enquo(xsd)
+  ysd <- enquo(ysd)
+  
+  dat %>% 
+    ggplot(aes(y = !!y, x = !!x)) +
+    geom_smooth(method = "lm", se = FALSE, formula = formula, data = dat %>% filter(type=="red"), color = "#F8766D") +
+    geom_point(aes(fill = type), color="black", pch = 21, size = 2.4) +
+    # the Y axis SD crossbar
+    geom_linerange(aes(ymin = !!y - !!ysd,
+                        ymax = !!y + !!ysd),
+                        alpha = 0.4) +
+    # the X axis crossbar
+    geom_linerange(aes(xmin = !!x - !!xsd,
+                     xmax = !!x + !!xsd),
+                  alpha = 0.4) +
+    theme_minimal()
+}
+```
+
+
+## A. albedo vs algae abund
+```{r}
+pa <- my_plot(dat2, x = frac_red_percent, y = mean_albedo, xsd = frac_red_percent_sd, ysd = sd_albedo, formula = y~log(x)) +
+  labs(x = "Cell area % cover", y = "Broadband albedo", fill = "Snow type", tag = "A") +
+  # lims(y = c(0, 1)) +
+  scale_fill_manual(values = c("gray", "#F8766D", "white"))
+pa
+```
+
+## B albedo vs RGND
+```{r}
+pb <- my_plot(dat2, x = mean_rgnd, y = mean_albedo, xsd = sd_rgnd, ysd = sd_albedo, formula = y~x) +
+  labs(x = "RGND", y = "Broadband albedo", fill = "Snow type", tag = "B") +
+  # lims(y = c(0, 1)) +
+  scale_fill_manual(values = c("gray", "#F8766D", "white"))
+pb
+```
+
+
+## Albedo boxplot
+```{r}
+dat2 %>% 
+  ggplot(aes(y = mean_albedo, x = type)) +
+  geom_boxplot() +
+  geom_point() +
+  lims(y = c(0,1))
+```
+Mean white albedo
+```{r}
+dat2 %>% 
+  filter(type=="white") %>% 
+  summarise(mean = mean(mean_albedo))
+```
+Min red albedo
+```{r}
+dat2 %>% 
+  filter(type%in%c("red", "pocket")) %>% 
+  filter(mean_albedo == min(mean_albedo))
+```
+```{r}
+(.69 - .26)/.69
+```
+
+
+
+```{r}
+dat2 %>% 
+  group_by(type) %>% 
+  summarise(mean(mean_albedo), min(mean_albedo), max(mean_albedo))
+```
+
+Red/white 
+
+
+## albedo vs TOC
+```{r}
+toc_plot_dat <- resp %>% 
+  left_join(preds, by = "sample_id") %>% 
+  filter(type != "pocket", pred_var == "toc") 
+
+toc_plot_dat %>% 
+  ggplot(aes(y = mean_albedo, x = mean)) +
+  geom_smooth(method = "lm", se = FALSE, data = toc_plot_dat %>% filter(type=="red"), color = "#F8766D") +
+  geom_point(aes(fill = type), color="black", pch = 21, size = 2.4) +
+  theme_minimal() +
+  labs(x = "Total organic carbon (g/m2)", y = "Broadband albedo", fill = "") +
+  scale_fill_manual(values = c("gray", "#F8766D", "white") ) +
+  # the Y axis SD crossbar
+  geom_linerange(aes(ymin = mean_albedo - sd_albedo, 
+                      ymax = mean_albedo + sd_albedo),
+                      alpha = 0.4) 
+```
+
+
+# Model
+
+
+```{r}
+mod_dat <- dat2 %>% 
+  filter(type == "red")
+
+albedo_algae_mod <- lm(mean_albedo ~ log(frac_red_percent), data = mod_dat)
+albedo_cc_mod <- lm(mean_albedo ~ log(mean_bil_cells_per_sq_m), data = mod_dat)
+albedo_rgnd_mod <- lm(mean_albedo ~ mean_rgnd, data = mod_dat)
+tidy(albedo_algae_mod)
+tidy(albedo_cc_mod)
+tidy(albedo_rgnd_mod)
+summary(albedo_rgnd_mod)
+```
+albedo = 0.29 - 0.08 * log(Cell Area Percent Cover)
+albedo = 0.61 - 0.88 * RGND
+
+```{r}
+summary(albedo_algae_mod)$r.squared # .80
+summary(albedo_cc_mod)$r.squared # 
+summary(albedo_rgnd_mod)$r.squared # 0.6
+```
+
+
+# Vis vs NIR albedo
+
+
+```{r}
+dat2 %>% 
+  ggplot(aes(y = mean_vis_albedo, x = mean_frac_red, color = type)) +
+  geom_point()
+```
+
+```{r}
+dat2 %>% 
+  group_by(type) %>% 
+  summarise(mean(mean_vis_albedo), min(mean_vis_albedo), max(mean_vis_albedo))
+```
+
+
+
+```{r}
+dat2 %>% 
+  ggplot(aes(y = mean_nir_albedo, x = mean_frac_red, color = type)) +
+  geom_point()
+```
+
+```{r}
+# anova
+nir_mod <- lm(mean_nir_albedo~type, data = dat2 %>% filter(type!="dirty"))
+summary(nir_mod)
+```
+
+
+# IRF
+
+For comparison with other studies
+
+Multiply incoming solar radiation by delta albedo (mean white snow albedo)   
+
+Tidy the incident solar data
+```{r}
+srad <- solar_rad %>% 
+  clean_names() %>% 
+  select(wavelength_nm, global_into_module_w_m2_nm) %>% 
+  rename(wvl = wavelength_nm)
+
+scan2 <- scans %>% 
+    # shorten the sample ID for plotting
+  mutate(sample_id = sample_id %>% str_remove("21.0"),# Remove the 21. from the sample IDs
+         sample_id = sample_id %>% str_remove("21.")) %>% 
+  group_by(sample_id, wvl) %>% 
+  summarise(mean = mean(tgt_ref_ratio),
+            sd = sd(tgt_ref_ratio)) %>% 
+  ungroup()
+```
+
+get white sample means
+```{r}
+white_samples <- dat2 %>% 
+  filter(type=="white") %>% 
+  pull(sample_id)
+
+white_snow_means <- scan2 %>% 
+  filter(sample_id %in% white_samples) %>% 
+  group_by(wvl) %>% 
+  summarise(white_mean = mean(mean))
+```
+
+Compute delta albedo
+```{r}
+irfs <- scan2 %>% 
+  filter(!(sample_id %in% white_samples)) %>% 
+  left_join(white_snow_means, by ="wvl") %>% 
+  mutate(delta_albedo = white_mean - mean) %>% 
+  inner_join(srad) %>%
+  mutate(irf = 10 * delta_albedo * global_into_module_w_m2_nm,
+         irf_sd = 10* sd * global_into_module_w_m2_nm)  # following Ganey 2017, multiply by 10 to account for the 10 nm increments
+
+irf_full <- irfs %>% 
+  # get the total IRF for each sample (sum across wavelengths)
+  group_by(sample_id) %>%
+  summarise(irf = sum(irf)) %>% 
+  left_join(dat2) %>% # cell abundance metrics
+  ungroup()
+
+irf_full %>% 
+  ggplot(aes(y = irf, x = mean_frac_red, color = type)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y~log(x), se = FALSE, data = irf_full %>% filter(type=="red"))
+```
+
+
+```{r}
+# compare 350-850, vs total
+irf_vis <- irfs %>% 
+  filter(wvl>=350, wvl<=850) %>% 
+  # get the total IRF for each sample (sum across wavelengths)
+  group_by(sample_id) %>%
+  summarise(irf = sum(irf),
+            irf_sd = sum(irf_sd)) %>% 
+  left_join(dat2) %>%  # cell abundance metrics
+  ungroup()
+
+
+plot_dat_irf <- irf_vis %>% 
+  mutate(type = case_when(type=="pocket"~"red",
+                          TRUE ~ type)) %>% 
+  drop_na(mean_frac_red)
+```
+
+## C. algae abund vs IRF
+```{r}
+pc <- my_plot(plot_dat_irf, x = frac_red_percent, y = irf, xsd = frac_red_percent_sd, ysd = irf_sd, formula = y~log(x)) +
+  labs(y = "IRF (Wm2)", x = "Cell area % coverage", fill = "Snow type", tag = "C") +
+  scale_fill_manual(values = c("gray", "#F8766D"))
+pc
+```
+
+
+
+
+## coefs
+```{r}
+irf_mod <- lm(irf ~ 0 +log(frac_red_percent), data = plot_dat_irf %>% filter(type != "dirty"))
+irf_mod %>% tidy()
+summary(irf_mod)$r.squared
+```
+
+IRF = 59 log(frac_red_percent)
+
+sanity check
+```{r}
+log(100)*59
+```
+# D. delta albedo vs RGND
+```{r}
+white_snow_bb_mean <- dat2 %>% 
+  filter(type=="white") %>% 
+  summarise(mean(mean_albedo)) %>% 
+  pull()
+
+pd <- dat2 %>% 
+  filter(type=="red") %>% 
+  mutate(delta_albedo = white_snow_bb_mean - mean_albedo) %>% 
+  my_plot(x = mean_rgnd, y = delta_albedo, xsd = sd_rgnd, ysd = sd_albedo, formula = y~x) +
+  labs(x = "RGND", y = "Delta broadband albedo", fill = "Snow type", tag = "D") +
+  # lims(y = c(0, 1)) +
+  scale_fill_manual(values = c("#F8766D", "white"))
+pd
+```
+
+
+
+# final plot (fig 3)
+```{r}
+legend <- cowplot::get_legend(pa)
+
+ggarrange(pa + theme(legend.position = "none"), 
+          pb + theme(legend.position = "none"), 
+          pc + theme(legend.position = "none"), 
+          legend,
+          ncol = 2, nrow = 2)
+```
+
+
+
+
+
+
+
+
+
+
+
+# scratch
+
+```{r}
+not_white <- not_dirty %>% 
+  filter(cells_per_ul_mean > 5) # white samples overestimate slope
+p3a <- not_dirty %>% 
+  my_plot_crossbars(albedo_mean, albedo_sd, frac_red_mean, frac_red_sd, "A") +
+  labs(y = "Broadband albedo", x = "Snow algae cell area") +
+  geom_text(aes(label = sample_id), data = outliers, nudge_y = 0.02, size = 3) +
+  geom_smooth(method="lm", linetype = "dashed", formula = y ~ log(x), data = not_white) # poly 2 results in a U-shaped curve
+# including the 0s yields a sharp hockey-stick (also cant take log of 0)
+p3a
+
+```
+
+```{r}
+p3b <- my_plot_crossbars(not_dirty, albedo_mean, albedo_sd, organic_carbon_mg_mean, NA, "B") +
+  geom_smooth(method="lm", linetype = "dashed", formula = y ~ log(x)) +
+  labs(y = "Broadband albedo", x = "Total Organic Carbon (mg)") +
+  geom_text(aes(label = sample_id), data = outliers, nudge_y = 0.02, size = 3) 
+p3b
+```
+```{r}
+lm(albedo_mean~organic_carbon_mg_mean, data=not_dirty) %>% summary()
+```
+
+
+
+
+```{r}
+p3c <- my_plot_crossbars(not_white, albedo_mean, albedo_sd, rgnd_mean, rgnd_sd, "C") +
+  geom_smooth(method="lm", linetype = "dashed", formula = y ~ x) +
+  labs(y = "Broadband albedo", x = "RGND") +
+  geom_text(aes(label = sample_id), data = outliers, nudge_y = 0.02, size = 3) 
+p3c
+```
+
+```{r}
+lm(albedo_mean~rgnd_mean, data=not_white) %>% summary()
+not_white %>% 
+  select(albedo_mean, rgnd_mean) %>% 
+  cor()
+```
+
+
+```{r}
+grid.arrange(p3a, p3b, p3c, nrow = 3)
+```
+
+
+
+```{r}
+joined_stats %>% 
+  filter(!(sample_id %in% dirty_samples)) %>%
+  ggplot(aes(y = albedo_mean, x = rgnd_mean)) +
+  geom_pointrange(aes(ymin = albedo_mean - albedo_sd, 
+                      ymax = albedo_mean + albedo_sd),
+                  alpha = 0.4) +
+  geom_linerange(aes(xmin = rgnd_mean - rgnd_sd,
+                     xmax = rgnd_mean + rgnd_sd),
+                  alpha = 0.4) +
+  geom_smooth(method = "lm")+
+  theme_minimal()
+```
+
+
+
+Direct comparison of albedo and cell abundance indicators
+
+```{r}
+joined_stats %>% 
+  filter(!(sample_id %in% dirty_samples)) %>% #remove mineral dust samples
+  ggplot(aes(y = albedo_mean, x = frac_red_mean)) + 
+  geom_pointrange(aes(ymin = albedo_mean - albedo_sd, 
+                      ymax = albedo_mean + albedo_sd),
+                  alpha = 0.4) +
+  geom_linerange(aes(xmin = frac_red_mean - frac_red_sd,
+                     xmax = frac_red_mean + frac_red_sd),
+                  alpha = 0.4) +
+  theme_minimal() +
+  geom_smooth(method="lm", linetype = "dashed", se=FALSE, formula = y ~ x)
+  # geom_text(aes(label = sample_id))
+```
+```{r}
+joined_stats %>% 
+  filter(!(sample_id %in% dirty_samples)) %>% #remove mineral dust samples
+  # filter(!(sample_id %in% outliers$sample_id)) %>%  # remove outliers
+  ggplot(aes(y = albedo_mean, x = organic_carbon_mg_mean)) + 
+  geom_pointrange(aes(ymin = albedo_mean - albedo_sd, 
+                      ymax = albedo_mean + albedo_sd),
+                  alpha = 0.4) +
+  theme_minimal() +
+  geom_smooth(method="lm", linetype = "dashed", se=FALSE, formula = y ~ x) #+
+  # geom_text(aes(label = sample_id))
+```
+

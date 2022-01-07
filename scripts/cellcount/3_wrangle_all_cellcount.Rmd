@@ -1,0 +1,182 @@
+---
+title: "combine final cell count data, compute stats"
+output: rmarkdown::github_document
+---
+
+Using the cookie samples collected w Scott 2021
+
+```{r libraries}
+library(here)
+library(tidyverse)
+```
+
+# Read in data
+```{r}
+cellcount_1 <- read_csv(here("data/cellcount/round1/clean_cell.csv"))
+cellcount_2 <- read_csv(here("data/cellcount/round2/clean_cell_recount.csv"))
+raw_epi <- read_csv(here("data/field_sample_meta/tidy_epicollect.csv"))
+```
+
+```{r}
+glimpse(cellcount_1)
+```
+```{r}
+glimpse(raw_epi)
+```
+# wrangle
+
+## convert snow weight to liquid volume 
+
+```{r}
+epi <- raw_epi %>% 
+  filter(container_type=="ziploc") %>% # only did cell counts for these samples
+  mutate(total_sample_water_vol_ul = weight_g * 1000, .keep = "unused")  %>% # 1 g h2o = 1 mL = 1000 ul
+  distinct(sample_id, total_sample_water_vol_ul) # remove duplicate entries
+```
+
+
+## join datasets
+
+```{r}
+joined <- cellcount_1 %>% 
+  bind_rows(cellcount_2) %>%
+  left_join(epi)
+
+joined
+```
+
+## Calculate fraction red cover
+
+1. scale up area to entire sample
+
+the ratio should remain the same
+- A1/V1 = A2/V2
+- cookie cell area/cookie liquid volume = hemocytometer cell area / hemocytometer grid volume
+or solving for cookie cell area:
+- cookie cell area = (hemocytometer cell area / hemocytometer grid volume) * cookie liquid volume
+
+2. Then express cookie total cell area as a fraction of the cookie area
+
+- frac_red = cookie cell area/cookie area
+
+3. putting the two together
+
+- frac_red =  ((hemocytometer cell area / hemocytometer grid volume) * cookie liquid volume ) / cookie area
+or since our counts are already per hemocytometer grid vol:
+- frac_red =  (cell_um2_per_ul * cookie liquid volume ) / cookie area
+
+```{r}
+cookie_area_um2 <- pi*(50 * 1000)^2 # PVC sampler radius = 5cm = 50 mm = 50,000 um
+cookie_area_sq_m <- pi*0.05^2
+
+joined_frac <- joined %>% 
+  mutate(frac_red = (cell_um2_per_ul * total_sample_water_vol_ul) / cookie_area_um2,
+         cells_per_sq_m = (cells_per_ul * total_sample_water_vol_ul) /cookie_area_sq_m,
+         # convert the units to cm2 per l for comparability with Ganey 2017. 
+         cell_cm2_per_l = cell_um2_per_ul * 0.01) # 1 um2/uL * 1cm2/1e8um2 * 1e6 uL/1L = 0.01 cm2/L
+
+joined_frac %>% 
+  arrange(-frac_red)
+```
+
+Check that the units are comparable to Ganey et al
+```{r}
+joined_frac %>% 
+  select(cell_cm2_per_l) 
+```
+Ganey range is 100-300 cm2/L
+
+# EDA
+
+## histograms
+```{r}
+cell_stats <- joined_frac %>% 
+  select(-aliquot) %>% 
+  # group by sample
+  group_by(sample_id) %>% 
+  summarize(across(everything(), list(mean = mean, sd = sd), .names = "{.col}.{.fn}")) %>% 
+  ungroup() %>% 
+  pivot_longer(-sample_id) %>% 
+  separate(name, c("var", "stat"), sep = "\\.") 
+
+cell_stats %>% 
+  filter(stat == "mean") %>% 
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(vars(var), scales = "free") +
+  ggtitle("histograms of cell count data")
+
+```
+## Mean cell area
+
+assume cells are spherical
+```{r}
+joined_frac %>% 
+  mutate(mean_rad_um = sqrt(mean_cell_area_um2/pi), # a=pi*r^2 -> r = sqrt(a/pi)
+         mean_vol_um3 = (4/3)*pi*mean_rad_um ) %>% # v=(4/3)pi*r 
+  ggplot(aes(mean_rad_um)) +
+  geom_histogram()
+```
+
+## Outlier check
+
+```{r}
+joined_frac %>% 
+  filter(cells_per_ul > 250)
+```
+
+## histograms of SD
+```{r}
+cell_stats %>% 
+  filter(stat == "sd") %>% 
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(vars(var), scales = "free") +
+  ggtitle("SD histograms of cell count data")
+```
+
+Most counts have low SD which is heartening. One high outlier
+
+```{r}
+cell_stats %>% 
+  filter(var == "cells_per_ul", stat == "sd", value > 40)
+```
+
+tri21.03 Aliquot A got some clumps, hence the high SD
+
+
+```{r}
+cell_stats_wide <-
+  cell_stats %>% 
+  unite(name, var:stat, sep = "_") %>% 
+  pivot_wider(sample_id)
+
+cell_stats_wide %>% 
+  arrange(-frac_red_sd) %>% 
+  select(sample_id, frac_red_sd)
+```
+
+Convert to cells per mL for comparison with Painter 2001
+```{r}
+cell_stats_wide %>% 
+  mutate(cells_per_ml_mean = cells_per_ul_mean * 1000) %>%
+  ggplot(aes(y=cells_per_ml_mean, x = 0)) +
+  geom_point() 
+```
+```{r}
+cell_stats_wide %>% 
+  mutate(cells_per_ml_mean = cells_per_ul_mean * 1000) %>%
+  summarise(mean = mean(cells_per_ml_mean))
+```
+
+
+
+# Write csv
+
+```{r}
+joined_frac %>%
+  write_csv(here("data/cellcount/final_cell.csv"))
+```
+
+
+

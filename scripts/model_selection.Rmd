@@ -1,0 +1,780 @@
+---
+title: "Snow algae abundance model"
+output: rmarkdown::github_document
+---
+
+```{r, echo = FALSE}
+library(tidyverse)
+library(here)
+library(janitor)
+# library(MuMIn) # automated AIC model selection
+library(GGally) # pretty pairs plots
+# library(gridExtra) # for multipanel figs
+library(broom) # clean up model results
+```
+
+# read in data
+
+```{r}
+cellcount <- read_csv(here("data/cellcount/final_cell.csv")) 
+biomass <- read_csv(here("data/biomass/tidy_biomass.csv")) 
+
+# convolved sample scans
+as_s2 <- read_csv(here("data/radiometer/as_s2.csv"))
+as_l8 <- read_csv(here("data/radiometer/as_l8.csv"))
+as_terra <- read_csv(here("data/radiometer/as_terra.csv"))
+as_planet <- read_csv(here("data/radiometer/as_planet.csv"))
+```
+
+# Compute band indices
+
+Based on the plot of the raw scans (see convolve_sample_scans script), the radio of red green, and red infrared appear proportional to algae abundance. Normalizing allows for comparability between images of different light intensity, since the ratio is all that matters. RGND was used by Ganey et al, and NDVI is a classic proxy for chlorophyll. 
+
+Given the data, feature engineering or multivariate regression to minimize the error is probably not worth it because the measurements have high error and our data is small.   
+
+```{r}
+nd <- function(a,b){ (a-b)/(a+b) } # normalized difference function
+
+compute_nds <- function(data, blue, green, red, nir, swir){
+  blue <- enquo(blue)
+  green <- enquo(green)
+  red <- enquo(red)
+  nir <- enquo(nir)
+  swir <- enquo(swir)
+  
+  data %>% 
+    mutate(ndvi = nd(!!nir, !!red),
+           rgnd = nd(!!red, !!green),
+           gbnd = nd(!!green, !!blue),
+           rbnd = nd(!!red, !!blue),
+           ndsi = nd(!!red, !!swir)) %>% 
+    select(scan_id, sample_id, ndvi, rgnd, gbnd, ndsi)
+}
+
+as_s2_nd <- as_s2 %>% compute_nds(blue = b2, green = b3, red = b4, nir = b8, swir = b11)
+as_l8_nd <- as_l8 %>% compute_nds(blue = band_2, green = band_3, red = band_4, nir = band_5, swir = band_6)
+as_terra_nd <- as_terra %>% compute_nds(blue = RSR_469, green = RSR_555, red = RSR_645, nir = RSR_859, swir = RSR_1640)
+as_planet_nd <- as_planet %>% compute_nds(blue = blue, red = red, green = green, nir = nir, swir = nir) %>%
+  select(-ndsi) # remove bogus NDSI computation
+```
+
+## Cross-platform comparison
+
+```{r}
+sat_indices <- add_column(as_s2_nd, platform = "s2") %>% 
+  bind_rows(add_column(as_l8_nd, platform = "l8")) %>% 
+  bind_rows(add_column(as_terra_nd, platform = "terra")) %>% 
+  bind_rows(add_column(as_planet_nd, platform = "planet")) %>% 
+  pivot_longer(cols = c(ndvi, rgnd, gbnd, ndsi),
+               names_to = "index") %>% 
+  pivot_wider(names_from = "platform")
+
+my_pairs <- function(data = sat_indices, ind){
+  data %>% 
+    filter(index == ind) %>% 
+    select(where(is.numeric)) %>% 
+    ggpairs() + # SLOW ~10 sec
+    ggtitle(ind)
+}
+
+sat_indices %>% my_pairs(ind = "ndvi") # SLOW
+sat_indices %>% my_pairs(ind = "rgnd")
+sat_indices %>% my_pairs(ind = "gbnd")
+sat_indices %>% my_pairs(ind = "ndsi")
+```
+
+```{r}
+s2_l8_compare <- sat_indices %>% 
+  filter(index=="rgnd") %>% 
+  select(s2, l8) %>% 
+  pivot_longer(everything())
+s2_l8_compare %>% 
+  ggplot(aes(x = name, y = value)) +
+  geom_violin() +
+  ggtitle("S2-L8 RGND comparison (convoluted sample scans)")
+```
+```{r}
+s2_l8_compare %>% 
+  group_by(name) %>% 
+  summarise(mean(value))
+  
+```
+```{r}
+compare_mod <- lm(value ~ name, data = s2_l8_compare)
+summary(compare_mod)
+```
+
+
+NDVI is negative, probably in the samples with less algae. The pure snow profile has a strong negative NIR to red ratio, so this makes sense. Just because the ratio dips below 0, doesn't mean that it's not a linear correlation tho. See Algae abundance model below. 
+
+Some problems with GBND across platforms, esp with MODIS Terra. Likely because the instruments are picking up on different parts of the spectrum. 
+
+Don't consider GBND
+
+```{r}
+indices2 <- sat_indices %>% 
+  filter(index!="gbnd")
+```
+
+## Compute mean (and sd) for each scan pair
+```{r}
+nd_sd <- indices2 %>% 
+  select(-scan_id) %>% 
+  group_by(sample_id, index) %>% 
+  summarise(across(everything(), list(mean = mean, sd = sd), .names = "{.col}_{.fn}")) %>% 
+  ungroup()
+```
+
+### cross-platform comparison of just mean vals
+```{r}
+nd_sd %>% select(index, contains("mean")) %>% my_pairs("ndvi")
+nd_sd %>% select(index, contains("mean")) %>% my_pairs("rgnd")
+nd_sd %>% select(index, contains("mean")) %>% my_pairs("ndsi")
+```
+Some discrepancies with Planet NDVI
+```{r}
+nd_sd %>% 
+  filter(index=="ndvi") %>% 
+  select(sample_id, l8_mean, planet_mean) %>% 
+  mutate(dif = abs(l8_mean - planet_mean)) %>% 
+  arrange(-dif) %>% 
+  left_join(cellcount %>% group_by(sample_id) %>% summarise(frac_red = mean(frac_red)))
+```
+
+Aside from perhaps a small caveat for Planet NDVI, 
+Having shown that these satellite platforms will have the same index values
+I will now arbitrarily choose one platform (S2) for the remaining analysis. 
+
+
+```{r}
+s2_indices <- nd_sd %>% # use this (long form)
+  select(sample_id, index, contains("s2")) %>% 
+  rename(mean = s2_mean, sd = s2_sd, name = index)
+s2_indices %>% write_csv(here("data/radiometer/as_s2_indices.csv"))
+```
+
+
+## QC for duplicate scans discrepancies in indices
+
+(this should already be take care of in the convolve script, but this is index specific)
+```{r}
+dup_difs <- indices2 %>% 
+  select(sample_id, index, s2) %>% 
+  group_by(sample_id, index) %>% 
+  mutate(dif = abs(s2[1] - s2[2]), .keep = "unused") %>% # absolute difference
+  ungroup() %>% 
+  distinct(sample_id, index, dif) %>% # remove duplicates
+  drop_na(dif) 
+dup_difs %>%   
+  ggplot(aes(dif)) +
+  geom_histogram() +
+  facet_wrap(vars(index), scales = "free") +
+  ggtitle("difference between duplicate scan pairs for indices")
+```
+These differences are pretty low on a scale from -1 to 1
+
+Compute the range of values for each index, to express the difference as a percent of the spread of values
+```{r}
+ranges <- indices2 %>% 
+  group_by(index) %>% 
+  summarise(max = max(s2), min = min(s2), range = max - min)
+ranges
+```
+```{r}
+dup_difs %>% 
+  left_join(ranges) %>% 
+  mutate(percent_dif = dif/range) %>% 
+  arrange(-percent_dif)
+```
+The NDSI comparisons are off a high percent because the range is so low to begin with. 
+All NDVI is off <5%, and all RGND <3%. 
+Data is ok to use. 
+
+
+
+# Algae abundance model
+
+
+## Join band data with cell abundance data 
+
+
+compute mean and SD for cell abundance data
+
+pivot everything to long form
+
+```{r}
+cell_long <- cellcount %>% 
+  select(sample_id, frac_red, cell_cm2_per_l, cells_per_sq_m) %>% # keep cm^2/L for comparison w Ganey 2017
+  # convert units
+  mutate(bil_cells_per_sq_m = cells_per_sq_m/1e9, .keep = "unused") %>%  # convert to billion cells
+  pivot_longer(-sample_id) %>% 
+  group_by(sample_id, name) %>% 
+  summarize(mean = mean(value), sd = sd(value)) %>% 
+  ungroup()
+
+# cell_long %>% write_csv(here("data/cellcount/cell_long.csv"))
+
+mass_long <- biomass %>% 
+  pivot_longer(-sample_id, values_to = "mean") %>% # common var name for joining
+  drop_na(mean) # missing IC for a few samples
+
+# for plotting with SD bars
+joined_long <- bind_rows(s2_indices, cell_long, mass_long) %>% # SD used for plotting
+  arrange(sample_id) %>% 
+  # shorten sample IDs for plotting
+  mutate(sample_id = sample_id %>% str_remove("21.0"),# Remove the 21. from the sample IDs
+       sample_id = sample_id %>% str_remove("21."))
+
+# for models and plots where SD not needed
+joined_wide <- joined_long %>% 
+  select(-sd) %>% 
+  pivot_wider(names_from = "name", values_from = "mean") %>% 
+  relocate(sample_id, rgnd, ndvi, ndsi)
+```
+
+
+
+## pairs plot
+
+```{r}
+pairs_plot <- joined_wide %>%
+  select(-sample_id) %>% 
+  ggpairs()
+# view this on full screen, hard to see within markdown doc
+```
+
+```{r}
+joined_wide %>% 
+  arrange(-mass_g_per_m2)
+```
+
+
+
+NDVI looks like a tighter fit than RGND, is RGND picking up on mineral dust mixed in?
+
+NDVI looks more linear, RGND more quadratic. 
+
+Several samples had outlier high TOC despite having relatively low algae, these samples contained visibly high mineral dust/pollen/dark stuff on surface, likely containing high organics that wouldn't increase the NDVI or RGND. Remove  
+
+```{r}
+dirty_snow_samples <- c("bdw9", "whi10", "tri14")
+pocket_samples <- c("whi3", "bdw4")
+
+joined_wide_clean <- joined_wide %>% 
+  filter(!(sample_id %in% dirty_snow_samples),
+         !(sample_id %in% pocket_samples))
+joined_long_clean <- joined_long %>% 
+  filter(!(sample_id %in% dirty_snow_samples),
+         !(sample_id %in% pocket_samples))
+```
+
+
+
+
+There are two outliers in the TOC ~ frac_red, and TOC ~ cellcount plots.... what are they?
+
+## TOC vs algae
+
+```{r}
+joined_wide %>% 
+  ggplot(aes(y = toc_g_per_m2, x = frac_red)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+
+joined_wide %>% 
+  ggplot(aes(y = toc_g_per_m2, x = bil_cells_per_sq_m)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+```
+
+tri3 and whi3 are the outliers
+Possible explanations: 
+- error in measurement, discrepancy between radiometer measurement point and the cookie (see photo).
+- cleaner, these had more algae and less biofilm. 
+
+
+```{r}
+joined_wide%>% 
+  ggplot(aes(y = frac_red, x = bil_cells_per_sq_m)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+```
+tri3 and whi3 have lower cell area than the others, the cells are just smaller. 
+
+
+# final fig2 plot
+
+Including crossbars
+
+Tidy the data for plotting
+```{r}
+# split into predictor and response tables
+preds <- joined_long_clean %>% 
+  filter(name %in% c("rgnd", "ndvi")) %>% # not using NDSI for anything here
+  pivot_wider(names_from = "name", values_from = c("mean", "sd"))
+  
+resp <- joined_long_clean %>%
+  filter(name %in% c("frac_red", "bil_cells_per_sq_m", "cell_cm2_per_l", "toc_g_per_m2", "tn_mg_per_m2")) %>% # properties we might want to predict remotely
+  rename(resp_name = name, resp_mean = mean, resp_sd = sd)
+
+# join back together
+plot_dat <- left_join(preds, resp)
+```
+RGND plot
+
+```{r, fig.width = 3, fig.height = 7}
+fig2_dat <- plot_dat %>%
+  filter(resp_name != "cell_cm2_per_l") %>% # don't plot this
+  mutate(resp_name = resp_name %>% fct_relevel(c("frac_red", "bil_cells_per_sq_m", "toc_g_per_m2", "tn_mg_per_m2"))) # pull(resp_name) %>% levels() #check fct levels
+
+f2 <- fig2_dat %>% 
+  ggplot(aes(y = resp_mean, x = mean_rgnd)) +
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + x) + # poly(x, 2)
+  geom_point(alpha = 0.4, size = 2) +
+  # the x val SD crossbar
+  geom_linerange(aes(ymin = resp_mean - resp_sd, 
+                      ymax = resp_mean + resp_sd),
+                      alpha = 0.4) +
+  # the y val SD crossbar
+  geom_linerange(aes(xmin = mean_rgnd - sd_rgnd,
+                   xmax = mean_rgnd + sd_rgnd),
+                alpha = 0.4) +
+  facet_grid(rows = vars(resp_name), scales = "free") +
+  # # annotate outliers
+  # geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.03,
+  #           data = fig2_dat %>% filter(sample_id %in% c("whi3", "bdw4", "tri3", "bdw3", "tri15", "bdw2"))) +
+  theme_minimal() +
+  theme(axis.title.y = element_blank()) +
+  labs(x = "RGND")
+f2
+ggsave(here("figs/f2.pdf"), height = 7, width = 3) # polish in inkscape
+```
+The final axis labels should be:
+Percent snow algae cell area
+Cell abundance (10^9 cells/m^2)
+Total organic carbon (g/m^2)
+Total nitrogen (mg/m^2)
+
+But I can add these in the final polish in Inkscape
+
+
+NDVI plot: (for supps)
+```{r, fig.width = 3, fig.height = 7}
+fig2_dat %>% 
+  ggplot(aes(y = resp_mean, x = mean_ndvi)) +
+  geom_smooth(method = "lm", alpha = 0.6, color = "lightblue", se = FALSE, formula = y ~ 0 + x) +
+  geom_point(alpha = 0.4, size = 2) +
+  # the x val SD crossbar
+  geom_linerange(aes(ymin = resp_mean - resp_sd, 
+                      ymax = resp_mean + resp_sd),
+                      alpha = 0.4) +
+  # the y val SD crossbar
+  geom_linerange(aes(xmin = mean_ndvi - sd_ndvi,
+                   xmax = mean_ndvi + sd_ndvi),
+                alpha = 0.4) +
+  facet_grid(rows = vars(resp_name), scales = "free") +
+  # annotate outliers
+  geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.02, 
+            data = fig2_dat %>% filter(sample_id %in% c("whi3", "bdw4", "tri3", "bdw3", "tri15", "bdw2"))) +
+  theme_minimal() +
+  theme(axis.title.y = element_blank()) +
+  labs(x = "NDVI")
+```
+
+# RGND model
+
+```{r}
+mod_dat <- joined_wide_clean %>% 
+  filter(!(sample_id %in% c("bdw4", "whi3") )) %>% # drop non-representative outliers
+  drop_na(rgnd)
+```
+
+
+Set intercept to 0
+
+```{r}
+frac_mod <- lm(frac_red ~ 0 + rgnd, data = mod_dat)
+cell_mod <- lm(bil_cells_per_sq_m ~ 0 + rgnd, data = mod_dat)
+toc_mod <- lm(toc_g_per_m2 ~ 0 + rgnd, data = mod_dat)
+tn_mod <- lm(tn_mg_per_m2 ~ 0 + rgnd, data = mod_dat)
+
+tidy(frac_mod)
+tidy(cell_mod)
+tidy(toc_mod)
+tidy(tn_mod)
+```
+
+## R squared
+```{r}
+summary(frac_mod)$r.squared
+summary(cell_mod)$r.squared
+summary(toc_mod)$r.squared
+summary(tn_mod)$r.squared
+```
+
+
+
+## Compare polynomial and single term models 
+```{r}
+frac_poly_mod <- lm(frac_red ~ 0 + poly(rgnd, 2), data = mod_dat)
+cell_poly_mod <- lm(bil_cells_per_sq_m ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+toc_poly_mod <- lm(toc_g_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+tn_poly_mod <- lm(tn_mg_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+
+AIC(frac_poly_mod, frac_mod, 
+    cell_poly_mod,cell_mod,
+    toc_poly_mod,toc_mod,
+    tn_poly_mod, tn_mod)
+
+```
+
+frac_red = -0.02 + 2.25 * mean
+toc_g_per_m2 = 0.176 + 15.8 * mean
+
+## compare w Ganey model
+
+```{r}
+mod_dat %>% 
+  ggplot(aes(x = rgnd, y = cell_cm2_per_l)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, formula = y ~ 0 + x)
+```
+
+
+A = 1,449 NDI
+
+```{r}
+ganey_frac_mod <- lm(cell_cm2_per_l ~ 0 + rgnd, data = mod_dat)
+tidy(ganey_frac_mod)
+```
+```{r}
+1234/1449 # our est is -15% of ganey
+1449/1234 # ganeys estimate is +17% of us
+```
+```{r}
+summary(ganey_frac_mod)$r.squared
+```
+
+
+# Model coefficients (include in supps)
+
+Compare model with two terms vs one
+
+```{r}
+# this function uses MuMIn to do AIC model comparison
+# input param is the response variable
+# predictor variables are NDVI and RGND
+# it compares models with one or both terms, and
+# outputs a df with AIC and coefficients for each model
+my_mod_compare <- function(df=joined_wide_clean, response){
+  form_response <- deparse( substitute( response) )
+  response <- enquo(response)
+  
+  mod_dat <- df %>% 
+    select(!!response, ndvi, rgnd) %>% 
+    drop_na()
+  # annoying workaround for pasting a formula together
+  mod <- lm(as.formula(paste(form_response, " ~ ndvi + rgnd")), data = mod_dat,  na.action = "na.fail") # must include na.fail
+  
+  mod_compare <- MuMIn::dredge(mod)
+  
+  mod_results <- mod_compare %>%
+    as_tibble(rownames='mod_id') %>%
+    janitor::clean_names() %>%
+    pivot_longer(intercept:rgnd) %>%
+    group_by(mod_id) %>%
+    mutate(nterm = sum(!is.na(value))) %>%  # n terms in model
+    ungroup() %>%
+    pivot_wider()
+  mod_results %>% 
+    relocate(nterm, delta)
+}
+my_mod_compare(response = frac_red)
+my_mod_compare(response = bil_cells_per_sq_m)
+my_mod_compare(response = toc_g_per_m2)
+my_mod_compare(response = tn_mg_per_m2)
+```
+NDVI best predictor of frac_red
+RGND slightly better predictor of cellcount, but NDVI close second
+NDVI best predictor of organic carbon
+NDVI+RGND slightly better pred of nitrogen, but NDVI a close second
+
+However, NDVI doesn't seem to work over snow on the remote sensing images... high noise?
+
+
+
+The coefficients are: 
+% Algae Cover = -0.03 + 2.3 RGND (percent area coverage of snow algae cells)
+Cell Density = -0.06 + 7.2 RGND (billion cells / sq m)
+TOC = 0.17 + 15.7 RGND (grams / sq m)
+N = 17 + 362 RGND (in mg/sq m)
+
+
+
+# Compare with other models
+
+## Ganey Dial 2017 algae abundance model
+
+
+
+
+# SCRATCH
+
+
+
+
+
+Cell area plot
+```{r, fig.width = 3, fig.height = 2}
+# create variables for shared elements among plot panels
+p_best_fit <- geom_smooth(method = "lm", linetype = "dashed", se = FALSE)
+p_ndvi_sd <- geom_linerange(aes(xmin = mean_ndvi - sd_ndvi,
+                     xmax = mean_ndvi + sd_ndvi),
+                  alpha = 0.4)
+p_points <- geom_point(alpha = 0.4, size = 2)
+p_labels <- geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.02, data = plot_dat %>% filter(frac_red_mean>0.5))
+p_theme <- theme_minimal() + theme(axis.title.y = element_text(size = 7))
+
+p_no_x_lab <- theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks = element_blank())
+
+area_plot <- plot_dat %>% 
+  ggplot(aes(y = frac_red_mean, x = mean_ndvi)) +
+  p_best_fit +
+  geom_linerange(aes(ymin = frac_red_mean - frac_red_sd, 
+                      ymax = frac_red_mean + frac_red_sd),
+                      alpha = 0.4) +
+  labs(tag = "A", y = "Percent snow algae area") +
+  annotate("text", label = "% algae cover = 0.35 + 4.2 NDVI", x = 0.08, y = -0.08, size = 2.5) +
+  p_ndvi_sd +
+  p_points +
+  p_labels +
+  p_theme +
+  p_no_x_lab
+area_plot
+```
+
+Cell count plot
+```{r, fig.width = 3, fig.height = 2}
+cellcount_plot <- plot_dat %>% 
+  ggplot(aes(y = bil_cells_per_sq_m_mean, x = mean_ndvi)) +
+  p_best_fit +
+  geom_linerange(aes(ymin = bil_cells_per_sq_m_mean - bil_cells_per_sq_m_sd, 
+                    ymax = bil_cells_per_sq_m_mean + bil_cells_per_sq_m_sd),
+                alpha = 0.4)  +
+  labs(tag = "B", y = expression(Cell~abundance~(10^9~cells/m^2)), x = "NDVI") +
+  annotate("text", label = "Cellcount = 1.1 + 12.8 NDVI", x = 0.08, y = -0.08, size = 2.5) +
+  p_ndvi_sd +
+  p_points +
+  p_labels +
+  p_theme +
+  p_no_x_lab
+cellcount_plot
+```
+
+
+TOC plot
+```{r, fig.width = 3, fig.height = 2}
+toc_plot <- plot_dat %>% 
+  ggplot(aes(y = ic_g_per_m2, x = mean_ndvi)) +
+  p_best_fit +
+  labs(tag = "C", y = bquote('Total organic carbon'~(g/m^2)), x = "NDVI") +
+  annotate("text", label = "TOC = 2.7 + 29 NDVI", x = 0.08, y = -0.08, size = 2.5) +
+  p_ndvi_sd +
+  p_points +
+  p_labels +
+  p_theme +
+  p_no_x_lab
+toc_plot
+```
+
+Nitrogen plot
+```{r, fig.width = 3, fig.height = 2}
+nitrogen_plot <- plot_dat %>% 
+  ggplot(aes(y = n, x = mean_ndvi)) +
+  p_best_fit +
+  labs(tag = "D", y = bquote('Total nitrogen'~(mg/m^2)), x = "NDVI") +
+  annotate("text", label = "TN = 76 + 676 NDVI", x = 0.08, y = -0.08, size = 2.5) +
+  p_ndvi_sd +
+  p_points +
+  p_labels +
+  p_theme
+nitrogen_plot
+```
+
+```{r, fig.width=3, fig.height=8}
+grid.arrange(area_plot, cellcount_plot, toc_plot, nitrogen_plot, nrow = 4)
+g <- arrangeGrob(area_plot, cellcount_plot, toc_plot, nitrogen_plot, nrow = 4) #generates g
+ggsave(here("figs/algae_abundance.png"), width = 3, height=8, dpi=400, g)
+```
+
+
+## regressions
+
+## NDVI linear
+```{r}
+toc_mod <- lm(organic_carbon_mg_mean ~ ndvi_mean, data = joined_stats_clean)
+area_mod <- lm(frac_red_mean ~ ndvi_mean, data = joined_stats_clean)
+
+toc_mod %>% tidy()
+area_mod %>% tidy()
+```
+
+## compare with RGND, polynomial models
+```{r}
+toc_mod_rgnd <- lm(organic_carbon_mg_mean ~ rgnd_mean, data = joined_stats_clean)
+toc_mod_poly <- lm(organic_carbon_mg_mean ~ poly(ndvi_mean, 2), data = joined_stats_clean)
+toc_mod_rgnd_poly <- lm(organic_carbon_mg_mean ~ poly(rgnd_mean, 2), data = joined_stats_clean)
+toc_2_mod <- lm(organic)
+
+area_mod_rgnd <- lm(frac_red_mean ~ rgnd_mean, data = joined_stats_clean)
+
+
+
+area_mod_rgnd_poly <- lm(frac_red_mean ~ poly(rgnd_mean, 2), data = joined_stats_clean)
+
+area_mod_poly <- lm(frac_red_mean ~ poly(ndvi_mean, 2), data = joined_stats_clean)
+
+multi_mod <- lm()
+
+list(toc_mod, toc_mod_poly, toc_mod_rgnd, toc_mod_rgnd_poly) %>% map(AIC) # best: toc mod poly
+list(area_mod, area_mod_poly, area_mod_rgnd, area_mod_rgnd_poly) %>% map(AIC) # best area mod
+```
+
+
+AIC model selection favors linear regression with NDVI as predictor. 
+
+There are multivariate options that I chose to stay away from, see multivariate_algae_abund_models.R 
+
+
+
+
+
+
+
+# Planet
+
+```{r}
+planet_nd <- planet_bands %>% 
+  mutate(rgnd = nd(red, green),
+         ndvi = nd(nir, red)) %>% 
+  select(sample_id, rgnd, ndvi) %>% 
+  group_by(sample_id) %>% 
+  summarise(across(everything(), list(mean = mean, sd = sd), .names = "{.col}_{.fn}"))
+planet_nd
+```
+```{r}
+planet_joined <- joined_stats %>% 
+  select(-ndvi_mean:-rgnd_sd) %>% # swap S2 index vals with planet vals
+  left_join(planet_nd)
+```
+```{r}
+my_plot(planet_joined, frac_red_mean, ndvi_mean, "Cell area vs NDVI")
+my_plot(planet_joined, frac_red_mean, rgnd_mean, "Cell area vs RGND")
+my_plot(planet_joined, organic_carbon_mg_mean, ndvi_mean, "TOC vs NDVI")
+my_plot(planet_joined, organic_carbon_mg_mean, rgnd_mean, "TOC vs RGND")
+```
+Not quite as good a fit as with the more discreet Sentinel bands, but similar result. 
+
+
+# Pairs plot
+
+```{r}
+pairs_plot <- joined_stats_clean %>% 
+  select(-sample_id, -contains("_sd")) %>% 
+  rename_with(~str_remove(., "_mean")) %>% # shorten names for plotting
+  rename_with(~str_remove(., "_mg")) %>% 
+  rename(total_n = nitrogen,
+         inorg_c = inorganic_carbon,
+         org_c = organic_carbon) %>% 
+  GGally::ggpairs()
+pairs_plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### range
+```{r}
+joined_stats %>% 
+  summarise(min_rgnd = min(rgnd_mean),
+            max_rgnd = max(rgnd_mean),
+            min_albedo = min(albedo_mean),
+            max_albedo = max(albedo_mean))
+```
+
+```{r}
+joined_stats %>% 
+  arrange(-rgnd_mean)
+```
+
+## biomass per cell
+
+```{r}
+joined_stats %>% 
+  mutate(org_c_per_cell_ng = organic_carbon_mg_mean/cells_in_sample_mean * 1e6) %>% # mg to ng
+  my_plot_var(org_c_per_cell_ng) 
+```
+
+## plots
+```{r}
+my_plot_crossbars <- function(dat, y_mean, y_sd, x_mean, x_sd, tag){
+  x_mean <- enquo(x_mean)
+  x_sd <- enquo(x_sd)
+  y_mean <- enquo(y_mean)
+  y_sd <- enquo(y_sd)
+
+  dat %>% 
+    ggplot(aes(y = !!y_mean, x = !!x_mean)) + 
+    geom_pointrange(aes(ymin = !!y_mean - !!y_sd, 
+                        ymax = !!y_mean + !!y_sd),
+                    alpha = 0.4) +
+    geom_linerange(aes(xmin = !!x_mean - !!x_sd,
+                       xmax = !!x_mean + !!x_sd),
+                    alpha = 0.4) +
+    theme_minimal() +
+    labs(tag = tag)
+}
+# my_plot_crossbars(joined_stats, cells_per_ul_mean, cells_per_ul_sd, rgnd_mean, rgnd_sd) # test
+
+
+outliers <- joined_stats %>% 
+  filter(sample_id %in% c("whi21.03", "bdw21.04"))
+
+# A
+p2a <- my_plot_crossbars(not_dirty, frac_red_mean, frac_red_sd, rgnd_mean, rgnd_sd, "A") +
+  geom_smooth(method="lm", linetype = "dashed", formula = y ~ poly(x, 2),
+              data = not_dirty %>% filter(!(sample_id %in% outliers$sample_id)) ) +
+  labs(y = "Snow algae cell area") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank()) +
+  geom_text(aes(label = sample_id), data = outliers, nudge_x = -0.03, size = 3)
+p2a
+```
+
+```{r}
+# B
+p2b <- my_plot_crossbars(not_dirty, organic_carbon_mg_mean, NA, rgnd_mean, rgnd_sd, "B") +
+  geom_smooth(method="lm", linetype = "dashed", formula = y ~ poly(x, 2),
+              data = not_dirty %>% filter(!(sample_id %in% outliers$sample_id)) ) +
+  labs(y = "Total Organic Carbon (mg)", x = "RGND (field radiometer as S-2 band)") +
+  geom_text(aes(label = sample_id), data = outliers, nudge_x = -0.03, size = 3) 
+p2b
+```
+```{r}
+grid.arrange(p2a, p2b, nrow = 2)
+```
+
+
+

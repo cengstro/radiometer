@@ -1,0 +1,98 @@
+---
+title: "Biomass wrangle"
+output: rmarkdown::github_document
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(readxl)
+library(janitor)
+```
+
+```{r}
+biomass_raw <- read_excel(here("data/biomass/toc.xlsx"), skip = 4)
+epi <- read_csv(here("data/field_sample_meta/tidy_epicollect.csv"))
+```
+
+Tidy the data
+```{r}
+biomass_tidy <- biomass_raw %>% 
+  janitor::clean_names() %>% 
+  select(-ubc_id) %>% 
+  rename(dry_wt_mg = dried_sample,
+         wt_for_cn = for_cn_mg, 
+         percent_tic = percent_carbonate_c_or_tic,
+         wt_for_tic = tic_mg)
+glimpse(biomass_tidy)
+```
+Scale the dry sample weight to account for the 600 uL aliquot used for cellcounts
+
+```{r}
+water_vol <- epi %>% 
+  distinct(sample_id, weight_g) %>% # remove duplicate entries
+  rename(vol_mL = weight_g) # assume 1 g water = 1 mL
+
+
+biomass_removed <- biomass_tidy %>% 
+  left_join(water_vol, by = "sample_id") %>% 
+  mutate(frac_removed = .6/vol_mL,
+         dry_wt_2 = dry_wt_mg + frac_removed*dry_wt_mg) %>% 
+  select(sample_id, dry_wt_2, percent_total_n, percent_total_c, percent_tic, percent_org_c)
+```
+
+
+
+Convert the units to mg per square meter
+```{r}
+sample_area <- pi*0.05^2 # sampling area, in square meters
+
+get_mg_per_sq_m <- function(element_percent){
+  frac_element <- as.numeric(element_percent)/100
+  mg_elt_per_sample <- biomass_removed$dry_wt_2 * frac_element
+  mg_per_sq_m <- mg_elt_per_sample / sample_area 
+  return(mg_per_sq_m)
+}
+
+biomass_units <- biomass_removed %>% 
+  mutate(tn_mg_per_m2 = get_mg_per_sq_m(percent_total_n), 
+         tc_g_per_m2 = get_mg_per_sq_m(percent_total_c)/1000, # convert to g
+         tic_mg_per_m2 = get_mg_per_sq_m(percent_tic), # Warning: NAs introduced by coercion
+         toc_g_per_m2 = get_mg_per_sq_m(percent_org_c)/1000, # convert to g
+         mass_g_per_m2 = (dry_wt_2/1000)/sample_area, # convert to g
+         .keep = "unused")
+biomass_units
+
+```
+
+
+
+```{r}
+biomass_units %>% 
+  pivot_longer(-sample_id) %>% 
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(vars(name), scales="free")
+```
+```{r}
+biomass_units %>% 
+  arrange(-toc_g_per_m2)
+```
+bdw21.04 has highest organics
+
+```{r}
+biomass_units %>% 
+  arrange(-tic_mg_per_m2)
+```
+whi21.10, the dirty snow sample, has highest inorganics, as well as highest nitrogen
+
+```{r}
+biomass_units %>% 
+  arrange(-mass_g_per_m2)
+```
+
+
+```{r}
+biomass_units %>% write_csv(here("data/biomass/tidy_biomass.csv"))
+```
+

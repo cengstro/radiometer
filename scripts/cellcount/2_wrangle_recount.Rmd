@@ -1,0 +1,166 @@
+---
+title: "Tidy cell recount data"
+output: html_notebook
+---
+
+Same script as tidy cell count, but for the recounts for the 10 w highest SD
+
+```{r}
+library(tidyverse)
+library(here)
+
+cells <- read_csv(here("data/cellcount/round2/Summary.csv"))
+
+glimpse(cells)
+```
+
+```{r}
+library(janitor)
+
+cells2 <- cells %>% 
+  clean_names() %>% 
+  separate(slice, c("sample_id", "rep"), sep = "_") %>% 
+  mutate(rep = rep %>% str_sub(1,2)) %>% 
+  rownames_to_column() %>% 
+  group_by(sample_id, rep) %>% 
+  # take the last rep (when I had to manually edit the image eg erase non-cell things that were counted there were multiple reps, but the last one is correct)
+  slice_min(order_by = rowname) %>% 
+  ungroup() %>% 
+  select(-mean, -rowname) %>% 
+  mutate(fraction_cell_cov = percent_area/100, # convert from percent to fraction (easier to do math with)
+         .keep = "unused") %>% 
+  # rename for clarity
+  rename(num_cells = count,
+         total_cell_area_px = total_area,
+         mean_area_px = average_size)
+cells2
+```
+
+Bring in the 0's
+```{r}
+library(fs)
+
+zeros <- dir_ls(here("photos/cell_count_photos/2_redo_counts_w_high_se/1_all")) %>% 
+  basename() %>% 
+  str_sub(1,11) %>% 
+  as_tibble() %>% 
+  separate(value, c("sample_id", "rep"), sep = "_")
+
+cells3 <- cells2 %>%
+  bind_rows(zeros) %>%
+  replace_na(list(num_cells = 0, total_cell_area_px = 0, fraction_cell_cov = 0, total_cell_area_mm2 = 0)) %>% 
+  arrange(sample_id, rep)
+
+# sanity check
+cells3 %>% 
+  group_by(sample_id) %>% 
+  summarize(n = n()) %>% 
+  arrange(n)
+```
+Each of the ten samples has 16 photos
+
+
+Sanity check, get distribution of mean cell area
+```{r}
+cells3 %>% 
+  ggplot(aes(mean_area_px)) +
+  geom_histogram()
+```
+
+Check on outlier
+
+```{r}
+cells3 %>% 
+  filter(mean_area_px > 4000)
+```
+
+Photos and Drawing.tiffs look ok
+
+```{r}
+cells3 %>% filter(mean_area_px<800)
+```
+tri2103_10 did not register the two cells, and instead picked up on some noise. 
+whi2104_03 looks ok, just v small cells
+
+
+```{r}
+cells3 %>% 
+  arrange(-fraction_cell_cov)
+```
+
+# Compute final stats per sample
+
+```{r}
+cells4 <- cells3 %>% 
+  # reps are grouped by pairs for each grid, and each 4 grids belong to a statistical replicate (an aliquot from the same sample)
+  mutate(rep = as.numeric(rep),
+         grid = case_when(rep %in% 1:2 ~ "a",
+                          rep %in% 3:4 ~ "b",
+                          rep %in% 5:6 ~ "c",
+                          rep %in% 7:8 ~ "d",
+                          rep %in% 9:10 ~ "e",
+                          rep %in% 11:12 ~ "f",
+                          rep %in% 13:14 ~ "g",
+                          rep %in% 15:16 ~ "h"),
+         # name the aliquots (replicates) C and D because we aleady counted an A and B for each
+         aliquot = case_when(grid %in% letters[1:4] ~ "C",
+                             grid %in% letters[5:8] ~ "D")) %>% 
+  # combine the two halves
+  group_by(sample_id, grid, aliquot) %>% 
+  summarize(num_cells = sum(num_cells), # add the two half grids together
+            total_cell_area_px = sum(total_cell_area_px), # add the two half areas together
+            mean_area_px = mean(mean_area_px, na.rm = TRUE), # mean cell size for the two halves (some NA's, must set na.rm true)
+            fraction_cell_cov = mean(fraction_cell_cov)) %>% # mean fraction cell coverage for the two halves 
+  ungroup()
+
+cells4
+```
+
+
+
+Since each set of 4 grids is a psuedo-replicate, add them together for each aliqout
+ie compute cell area per 0.4 ul
+
+Also convert pixels to real units
+
+Compute:
+- cells per ul
+- total cell area per ul
+- mean cell area
+
+
+```{r}
+cells5 <- cells4 %>% 
+  # doing the algebra to convert units:
+  # fraction  = cell area / total area -> cell area = fraction * total area
+  # total area is 1 mm2...
+  # so cell area in mm2 = fraction 
+  rename(cell_area_mm2 = fraction_cell_cov) %>% # per 1x1 mm grid
+  # compute stats per 0.4 ul (the total of 4 grids, there's 0.1 ul per grid)
+  group_by(sample_id, aliquot) %>% 
+  summarise(cells_per_ul = sum(num_cells) / 0.4, 
+            # convert units mm2 per ul to um2 per ul
+            cell_um2_per_ul = (sum(cell_area_mm2) *(1000*1000)) / 0.4) %>% 
+  ungroup() %>% 
+  # use the result to compute mean cell area, the vol units cancel
+  mutate(mean_cell_area_um2 = cell_um2_per_ul/cells_per_ul) %>% 
+  select(sample_id, aliquot, cells_per_ul, cell_um2_per_ul, mean_cell_area_um2)
+
+cells5 %>% 
+  arrange(sample_id)
+```
+
+The individual cell areas are reasonable, e.g. a cell 5 um radius has area of ~80 um2, of 10 um radius would have radius of 300um2
+
+The total cell areas are reasonable, if we divide by 10 we have on the order of magnitude of 1,000 - 10,000 um2 per grid. The grid is 1,000,000 um2 total, so we see a range between .1 and 1 percent coverage of the cells. 
+
+The cells per ul is reasonable, if we divide by 10 we have the n cells per grid. 
+
+
+```{r}
+cells5 %>% 
+   # add period in sample ID for consistency with first batch
+  mutate(sample_id = sample_id %>% str_replace("21", "21.")) %>% 
+  write_csv(here("data/cellcount/recount_select/clean_cell_recount.csv"))
+```
+
