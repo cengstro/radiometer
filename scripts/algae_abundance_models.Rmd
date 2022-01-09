@@ -7,15 +7,13 @@ output: rmarkdown::github_document
 library(tidyverse)
 library(here)
 library(janitor)
-# library(MuMIn) # automated AIC model selection
-library(GGally) # pretty pairs plots
-# library(gridExtra) # for multipanel figs
-library(broom) # clean up model results
+library(GGally) 
+library(broom) 
 ```
 
 # read in data
 
-```{r}
+```{r, echo=FALSE}
 cellcount <- read_csv(here("data/cellcount/final_cell.csv")) 
 biomass <- read_csv(here("data/biomass/tidy_biomass.csv")) 
 
@@ -28,12 +26,15 @@ as_planet <- read_csv(here("data/radiometer/as_planet.csv"))
 
 # Compute band indices
 
-Based on the plot of the raw scans (see convolve_sample_scans script), the radio of red green, and red infrared appear proportional to algae abundance. Normalizing allows for comparability between images of different light intensity, since the ratio is all that matters. RGND was used by Ganey et al, and NDVI is a classic proxy for chlorophyll. 
-
-Given the data, feature engineering or multivariate regression to minimize the error is probably not worth it because the measurements have high error and our data is small.   
+Red green normalized difference (RGND; NDI in Ganey 2017; SDI in DiMauro 2015)
+Normalized difference vegetation index (NDVI)
+Green blue normalized difference (GBND)
+Normalized difference snow index (NDSI)
+Red blue normalized difference (RBND)
 
 ```{r}
-nd <- function(a,b){ (a-b)/(a+b) } # normalized difference function
+# a function to compute the normalized difference
+nd <- function(a,b){ (a-b)/(a+b) } 
 
 compute_nds <- function(data, blue, green, red, nir, swir){
   blue <- enquo(blue)
@@ -51,10 +52,11 @@ compute_nds <- function(data, blue, green, red, nir, swir){
     select(scan_id, sample_id, ndvi, rgnd, gbnd, ndsi)
 }
 
+# compute indices for convolved radiometer data 
 as_s2_nd <- as_s2 %>% compute_nds(blue = b2, green = b3, red = b4, nir = b8, swir = b11)
 as_l8_nd <- as_l8 %>% compute_nds(blue = band_2, green = band_3, red = band_4, nir = band_5, swir = band_6)
 as_terra_nd <- as_terra %>% compute_nds(blue = RSR_469, green = RSR_555, red = RSR_645, nir = RSR_859, swir = RSR_1640)
-as_planet_nd <- as_planet %>% compute_nds(blue = blue, red = red, green = green, nir = nir, swir = nir) %>%
+as_planet_nd <- as_planet %>% compute_nds(blue = blue, red = red, green = green, nir = nir, swir = nir) %>% # add in a random band as a placeholder for SWIR, since planet dosen't have this band
   select(-ndsi) # remove bogus NDSI computation
 ```
 
