@@ -2,7 +2,6 @@
 .Rhistory
 .RData
 .Ruserdata
-*.RProj
 
 writing/*
 sat_images/*
