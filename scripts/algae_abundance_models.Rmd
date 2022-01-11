@@ -6,6 +6,7 @@ output: rmarkdown::github_document
 ```{r, echo = FALSE}
 library(tidyverse)
 library(here)
+library(fs)
 library(janitor)
 library(GGally) 
 library(broom) 
@@ -22,7 +23,16 @@ as_s2 <- read_csv(here("data/radiometer/as_s2.csv"))
 as_l8 <- read_csv(here("data/radiometer/as_l8.csv"))
 as_terra <- read_csv(here("data/radiometer/as_terra.csv"))
 as_planet <- read_csv(here("data/radiometer/as_planet.csv"))
+
+# # Ganey 2017 data for direct comparison
+# g_cell <- read_csv(here("data/ganey_2017_data/SnowbirdCellData.csv"))
+# g_rad <- dir_ls(here("data/ganey_2017_data"), regexp = "*B.csv") %>% 
+#   map_df(read_csv, id = "filename")
 ```
+
+
+
+
 
 # Compute band indices
 
@@ -80,7 +90,8 @@ my_pairs <- function(data = sat_indices, ind){
 }
 
 sat_indices %>% my_pairs(ind = "ndvi") # SLOW
-sat_indices %>% my_pairs(ind = "rgnd")
+sat_indices %>% 
+  select(-planet) %>% my_pairs(ind = "rgnd")
 sat_indices %>% my_pairs(ind = "gbnd")
 sat_indices %>% my_pairs(ind = "ndsi")
 ```
@@ -88,12 +99,13 @@ sat_indices %>% my_pairs(ind = "ndsi")
 ```{r}
 s2_l8_compare <- sat_indices %>% 
   filter(index=="rgnd") %>% 
-  select(s2, l8) %>% 
+  select(s2, l8, terra) %>% 
   pivot_longer(everything())
 s2_l8_compare %>% 
   ggplot(aes(x = name, y = value)) +
-  geom_violin() +
-  ggtitle("S2-L8 RGND comparison (convoluted sample scans)")
+  geom_boxplot() +  
+  geom_jitter(width = 0.2, alpha = 0.2) +
+  ggtitle("S2-L8-Terra RGND comparison (convolved sample scans)")
 ```
 ```{r}
 s2_l8_compare %>% 
@@ -208,7 +220,9 @@ pivot everything to long form
 cell_long <- cellcount %>% 
   select(sample_id, frac_red, cell_cm2_per_l, cells_per_sq_m) %>% # keep cm^2/L for comparison w Ganey 2017
   # convert units
-  mutate(bil_cells_per_sq_m = cells_per_sq_m/1e9, .keep = "unused") %>%  # convert to billion cells
+  mutate(bil_cells_per_sq_m = cells_per_sq_m/1e9, # convert to billion cells
+         cell_area_percent = frac_red * 100,
+         .keep = "unused") %>%  
   pivot_longer(-sample_id) %>% 
   group_by(sample_id, name) %>% 
   summarize(mean = mean(value), sd = sd(value)) %>% 
@@ -234,6 +248,9 @@ joined_wide <- joined_long %>%
   relocate(sample_id, rgnd, ndvi, ndsi)
 ```
 
+```{r}
+joined_wide
+```
 
 
 ## pairs plot
@@ -260,14 +277,11 @@ Several samples had outlier high TOC despite having relatively low algae, these 
 
 ```{r}
 dirty_snow_samples <- c("bdw9", "whi10", "tri14")
-pocket_samples <- c("whi3", "bdw4")
 
 joined_wide_clean <- joined_wide %>% 
-  filter(!(sample_id %in% dirty_snow_samples),
-         !(sample_id %in% pocket_samples))
+  filter(!(sample_id %in% dirty_snow_samples))
 joined_long_clean <- joined_long %>% 
-  filter(!(sample_id %in% dirty_snow_samples),
-         !(sample_id %in% pocket_samples))
+  filter(!(sample_id %in% dirty_snow_samples))
 ```
 
 
@@ -279,7 +293,7 @@ There are two outliers in the TOC ~ frac_red, and TOC ~ cellcount plots.... what
 
 ```{r}
 joined_wide %>% 
-  ggplot(aes(y = toc_g_per_m2, x = frac_red)) +
+  ggplot(aes(y = toc_g_per_m2, x = cell_area_percent)) +
   geom_point() +
   geom_text(aes(label = sample_id), alpha = 0.4)
 
@@ -316,7 +330,7 @@ preds <- joined_long_clean %>%
   pivot_wider(names_from = "name", values_from = c("mean", "sd"))
   
 resp <- joined_long_clean %>%
-  filter(name %in% c("frac_red", "bil_cells_per_sq_m", "cell_cm2_per_l", "toc_g_per_m2", "tn_mg_per_m2")) %>% # properties we might want to predict remotely
+  filter(name %in% c("cell_area_percent", "bil_cells_per_sq_m", "cell_cm2_per_l", "toc_g_per_m2", "tn_mg_per_m2")) %>% # properties we might want to predict remotely
   rename(resp_name = name, resp_mean = mean, resp_sd = sd)
 
 # join back together
@@ -327,11 +341,14 @@ RGND plot
 ```{r, fig.width = 3, fig.height = 7}
 fig2_dat <- plot_dat %>%
   filter(resp_name != "cell_cm2_per_l") %>% # don't plot this
-  mutate(resp_name = resp_name %>% fct_relevel(c("frac_red", "bil_cells_per_sq_m", "toc_g_per_m2", "tn_mg_per_m2"))) # pull(resp_name) %>% levels() #check fct levels
+  mutate(resp_name = resp_name %>% fct_relevel(c("bil_cells_per_sq_m", "cell_area_percent", "toc_g_per_m2", "tn_mg_per_m2"))) # pull(resp_name) %>% levels() #check fct levels
 
 f2 <- fig2_dat %>% 
   ggplot(aes(y = resp_mean, x = mean_rgnd)) +
-  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + x) + # poly(x, 2)
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + x,
+              data = fig2_dat %>% filter(resp_name %in% c("cell_area_percent", "bil_cells_per_sq_m"))) + 
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ x,
+              data = fig2_dat %>% filter(!(resp_name %in% c("cell_area_percent", "bil_cells_per_sq_m")))) + 
   geom_point(alpha = 0.4, size = 2) +
   # the x val SD crossbar
   geom_linerange(aes(ymin = resp_mean - resp_sd, 
@@ -364,7 +381,8 @@ NDVI plot: (for supps)
 ```{r, fig.width = 3, fig.height = 7}
 fig2_dat %>% 
   ggplot(aes(y = resp_mean, x = mean_ndvi)) +
-  geom_smooth(method = "lm", alpha = 0.6, color = "lightblue", se = FALSE, formula = y ~ 0 + x) +
+  facet_grid(rows = vars(resp_name), scales = "free") +
+  geom_smooth(method = "lm", alpha = 0.6, color = "lightblue", se = FALSE, formula = y ~ x) +
   geom_point(alpha = 0.4, size = 2) +
   # the x val SD crossbar
   geom_linerange(aes(ymin = resp_mean - resp_sd, 
@@ -374,7 +392,6 @@ fig2_dat %>%
   geom_linerange(aes(xmin = mean_ndvi - sd_ndvi,
                    xmax = mean_ndvi + sd_ndvi),
                 alpha = 0.4) +
-  facet_grid(rows = vars(resp_name), scales = "free") +
   # annotate outliers
   geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.02, 
             data = fig2_dat %>% filter(sample_id %in% c("whi3", "bdw4", "tri3", "bdw3", "tri15", "bdw2"))) +
@@ -387,7 +404,6 @@ fig2_dat %>%
 
 ```{r}
 mod_dat <- joined_wide_clean %>% 
-  filter(!(sample_id %in% c("bdw4", "whi3") )) %>% # drop non-representative outliers
   drop_na(rgnd)
 ```
 
@@ -395,21 +411,23 @@ mod_dat <- joined_wide_clean %>%
 Set intercept to 0
 
 ```{r}
-frac_mod <- lm(frac_red ~ 0 + rgnd, data = mod_dat)
-cell_mod <- lm(bil_cells_per_sq_m ~ 0 + rgnd, data = mod_dat)
-toc_mod <- lm(toc_g_per_m2 ~ 0 + rgnd, data = mod_dat)
-tn_mod <- lm(tn_mg_per_m2 ~ 0 + rgnd, data = mod_dat)
 
-tidy(frac_mod)
+cell_mod <- lm(bil_cells_per_sq_m ~ 0 + rgnd, data = mod_dat)
+frac_mod <- lm(cell_area_percent ~ 0 + rgnd, data = mod_dat)
+toc_mod <- lm(toc_g_per_m2 ~ rgnd, data = mod_dat)
+tn_mod <- lm(tn_mg_per_m2 ~ rgnd, data = mod_dat)
+
 tidy(cell_mod)
+tidy(frac_mod)
 tidy(toc_mod)
 tidy(tn_mod)
 ```
 
 ## R squared
 ```{r}
-summary(frac_mod)$r.squared
 summary(cell_mod)$r.squared
+summary(frac_mod)$r.squared
+
 summary(toc_mod)$r.squared
 summary(tn_mod)$r.squared
 ```
@@ -418,8 +436,9 @@ summary(tn_mod)$r.squared
 
 ## Compare polynomial and single term models 
 ```{r}
-frac_poly_mod <- lm(frac_red ~ 0 + poly(rgnd, 2), data = mod_dat)
+
 cell_poly_mod <- lm(bil_cells_per_sq_m ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+frac_poly_mod <- lm(cell_area_percent ~ 0 + poly(rgnd, 2), data = mod_dat)
 toc_poly_mod <- lm(toc_g_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
 tn_poly_mod <- lm(tn_mg_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
 
@@ -435,6 +454,18 @@ toc_g_per_m2 = 0.176 + 15.8 * mean
 
 ## compare w Ganey model
 
+
+<!-- ### tidy romans data -->
+
+<!-- ```{r} -->
+<!-- g_cell %>%  -->
+<!--   clean_names() -->
+<!-- g_rad %>%  -->
+<!--   mutate(value = mean(V1:V10), .keep = "unused") -->
+<!-- ``` -->
+
+
+
 ```{r}
 mod_dat %>% 
   ggplot(aes(x = rgnd, y = cell_cm2_per_l)) +
@@ -443,17 +474,26 @@ mod_dat %>%
 ```
 
 
-A = 1,449 NDI
+Ganey : A = 1,449 NDI
+
+
+
 
 ```{r}
 ganey_frac_mod <- lm(cell_cm2_per_l ~ 0 + rgnd, data = mod_dat)
 tidy(ganey_frac_mod)
+summary(ganey_frac_mod)$r.squared
+
 ```
 ```{r}
-1234/1449 # our est is -15% of ganey
-1449/1234 # ganeys estimate is +17% of us
+1727/1449 # our est is +19% of ganey
+1449/1727 # ganey's estimate is 16% lower than ours
 ```
+excluding outliers  
 ```{r}
+ganey_frac_mod <- lm(cell_cm2_per_l ~ 0 + rgnd, data = mod_dat %>% 
+                       filter(cell_cm2_per_l<800))
+tidy(ganey_frac_mod)
 summary(ganey_frac_mod)$r.squared
 ```
 

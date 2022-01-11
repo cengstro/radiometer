@@ -10,7 +10,7 @@ library(here)
 library(readxl)
 library(janitor)
 library(zoo) # for interpolation
-
+library(broom)
 
 
 # read in data ----------------------------------------
@@ -42,7 +42,7 @@ s2_bands_raw <- read_excel(here("data/satellite_rsr/sentinel-2_approx_bands.xlsx
 
 rad %>% 
   filter(wvl<1340) %>% 
-  # filter(sample_id == "tri21.07") %>% # uncomment to plot only one scan
+  filter(sample_id == "bdw21.06") %>% # uncomment to plot only one scan
   ggplot(aes(x = wvl, y = tgt_ref_ratio)) +
   geom_line(aes(group = scan_id)) +
   geom_text(aes(label = sample_id), data = rad %>% filter(wvl==350))
@@ -208,14 +208,14 @@ s2_band_geoms <- s2_bands_raw %>%
   
 s2_band_plot_data <- s2_band_geoms %>% 
   slice(2:4, 8) %>% # only show visible and NIR bands for simplicity in this plot
-  mutate(name = if_else(name %in% c("Red","Green","Blue"), str_sub(name, 1, 1), name)) %>%
+  # mutate(name = if_else(name %in% c("Red","Green","Blue"), str_sub(name, 1, 1), name)) %>%
   # add y values, specify colors for each rectangle
   add_column(ymin = rep(0, 4),
              ymax = rep(0.05, 4),
              color = c("blue", "green", "darkred", "darkgrey"))
 
 band_geoms <- geom_rect(s2_band_plot_data, mapping = aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax), fill = s2_band_plot_data$color, inherit.aes = FALSE, show.legend = FALSE)
-band_text <- geom_text(s2_band_plot_data, mapping = aes(xmin+25, ymin+0.025, label = band), size = 4, color = "white", inherit.aes = FALSE)
+band_text <- geom_text(s2_band_plot_data, mapping = aes(xmin+25, ymin+0.025, label = name), size = 4, color = "white", inherit.aes = FALSE)
 
 # final plot (fig 1)
 p1 + 
@@ -224,10 +224,8 @@ p1 +
   band_text +
   scale_x_continuous(minor_breaks = seq(400 , 1300, 100), breaks = seq(400, 1300, 200)) +
   theme(legend.position = c(0.9, 0.8)) +
-  labs(x = "Wavelength (nm)", y = "Spectral albedo", color = "Snow algae \nconcentration \n(cell area)")
-
-
-
+  labs(x = "Wavelength (nm)", y = "Spectral albedo", color = "Snow algae \ncell area \n% coverage", tag = "A")
+ggsave(here("figs/f1A.png"), height = 7, width = 9)
 
 
 

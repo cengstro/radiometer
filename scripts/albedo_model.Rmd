@@ -86,6 +86,11 @@ dat2 <- dat %>%
 dat2
 ```
 
+```{r}
+dat2 %>% 
+  select(sample_id, type) %>% 
+  write_csv(here("data/field_sample_meta/final_sample_list.csv"))
+```
 
 
 
@@ -155,7 +160,7 @@ dat2 %>%
 Min red albedo
 ```{r}
 dat2 %>% 
-  filter(type%in%c("red", "pocket")) %>% 
+  filter(type%in%c("red")) %>% 
   filter(mean_albedo == min(mean_albedo))
 ```
 ```{r}
@@ -175,13 +180,9 @@ Red/white
 
 ## albedo vs TOC
 ```{r}
-toc_plot_dat <- resp %>% 
-  left_join(preds, by = "sample_id") %>% 
-  filter(type != "pocket", pred_var == "toc") 
-
-toc_plot_dat %>% 
-  ggplot(aes(y = mean_albedo, x = mean)) +
-  geom_smooth(method = "lm", se = FALSE, data = toc_plot_dat %>% filter(type=="red"), color = "#F8766D") +
+dat2 %>% 
+  ggplot(aes(y = mean_albedo, x = toc_g_per_m2)) +
+  geom_smooth(method = "lm", formula = y~log(x), se = FALSE, data = dat2 %>% filter(type=="red"), color = "#F8766D") +
   geom_point(aes(fill = type), color="black", pch = 21, size = 2.4) +
   theme_minimal() +
   labs(x = "Total organic carbon (g/m2)", y = "Broadband albedo", fill = "") +
@@ -247,6 +248,11 @@ nir_mod <- lm(mean_nir_albedo~type, data = dat2 %>% filter(type!="dirty"))
 summary(nir_mod)
 ```
 
+```{r}
+dat2 %>% 
+  ggplot(aes(y = mean_nir_albedo, x = type)) +
+  geom_boxplot()
+```
 
 # IRF
 
@@ -320,8 +326,6 @@ irf_vis <- irfs %>%
 
 
 plot_dat_irf <- irf_vis %>% 
-  mutate(type = case_when(type=="pocket"~"red",
-                          TRUE ~ type)) %>% 
   drop_na(mean_frac_red)
 ```
 
@@ -380,6 +384,9 @@ ggarrange(pa + theme(legend.position = "none"),
 ```
 
 
+```{r}
+# ggsave(here("figs/f3.pdf"))
+```
 
 
 

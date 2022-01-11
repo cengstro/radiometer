@@ -1,3 +1,11 @@
+---
+title: "epicollect field sample metadata"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+```{r}
 # Tidy epicollect data
 
 library(here)
@@ -27,8 +35,10 @@ epi_select <- raw_epi %>%
          sample_id = sample_id %>% tolower(),
          .after = sample_id) 
 epi_select
+```
 
 
+```{r}
 # what is the mean snow density? assuming pi*5cm^2 * 2 cm volume = 157 ml
 epi_select %>% 
   mutate(snow_density = weight_g/157) %>% # in g/ml, see wiki firn snow density
@@ -46,7 +56,10 @@ epi_select %>%
 #   as.numeric() %>% 
 #   reduce(seq)
 # # end test
+```
 
+
+```{r}
 get_vec_of_scan_ids <- function(str){
   str %>% 
     str_extract_all("[:digit:]+") %>% 
@@ -68,11 +81,17 @@ epi_scan_id <- epi_select %>%
   mutate(scan_id = str_glue("{date}_{scan_strings}") %>% 
            str_remove_all("-"),
          .keep = "unused")
+```
 
+
+```{r}
 epi_scan_id %>% 
   filter(!str_detect(scan_id, "NA")) %>% 
   write_csv(here("data/field_sample_meta/tidy_epicollect.csv"))
+```
 
+
+```{r}
 # make a table of sample metadata
 
 kk <- epi_select %>% 
@@ -81,8 +100,12 @@ kk <- epi_select %>%
   inner_join(final_list) %>% 
   # convert to local time
   mutate(datetime = datetime - hours(8)) %>% 
-  select(sample_id, type, lon, lat, datetime) 
+  select(sample_id, type, lat, lon, datetime) 
 
 kk %>% 
-  kbl(format = "latex", booktabs =TRUE) %>% 
+  kbl(format = "latex", booktabs = TRUE) %>% 
   kable_styling(latex_options = "striped")
+
+```
+
+
