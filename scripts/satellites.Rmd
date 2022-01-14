@@ -11,32 +11,33 @@ library(here)
 library(fs)
 library(janitor)
 library(lubridate)
+library(tsibble)
+library(splines)
 library(zoo)
 library(kableExtra)
 library(GGally)
 ```
 
 ```{r}
+# modis polygon
 ts_modis <- dir_ls(here("data/gee_ts/modis_grid_cells"), regexp = ".csv$") %>% 
-  map_df(read_csv, id = "filename")
+  map_df(read_csv, id = "filename", col_types = cols())
 
-# w custom perimeter
+# bloom polygon
 ts_custom <- dir_ls(here("data/gee_ts/custom_polygon"), regexp = ".csv$") %>% 
-  map_df(read_csv, id = "filename")
+  map_df(read_csv, id = "filename", col_types = cols())
 
+# glacier polygon
 ts_glims <- dir_ls(here("data/gee_ts/glimsGeom"), regexp = ".csv$") %>% 
-  map_df(read_csv, id = "filename")
+  map_df(read_csv, id = "filename", col_types = cols())
 
-srad <- dir_ls(here("data"), regexp = "*srad_wx.csv$") %>% # doing this seperately for now, redundant since it's also in wx
-  map_df(read_csv, id = "filename")
-
+# histogram of RGND during peak bloom week
 hist <- dir_ls(here("data"), regexp = "*hist.csv$") %>% 
-  map_df(read_csv, id = "filename")
-
+  map_df(read_csv, id = "filename", col_types = cols())
 
 # wx
 wx <- dir_ls(here("data"), regexp = "*wx.csv$") %>% 
-  map_df(read_csv, id = "filename")
+  map_df(read_csv, id = "filename", col_types = cols())
 ```
 
 
@@ -74,10 +75,6 @@ ts_glims_wide <- ts_glims %>%
   my_tidy() %>% 
   ts_tidy()
 
-srad_clean <- srad %>% 
-  my_tidy() %>% 
-  select(site, date, srad)
-
 hist_clean <- hist %>% 
   clean_names() %>% 
   mutate(site = basename(filename) %>% str_split_n("_", 1), .keep = "unused")
@@ -92,563 +89,330 @@ wx_clean <- wx %>%
 
 
 
-Long format for plotting w albedo
-```{r}
-# for plotting albedo and RGND on the same axis
-ts_modis_long <- ts_modis_wide %>% 
-  pivot_longer(cols = c(rgnd, albedo), names_to = "band", values_drop_na = TRUE)
-
-ts_custom_long <- ts_custom_wide %>% 
-    pivot_longer(cols = c(rgnd, albedo), names_to = "band", values_drop_na = TRUE)
-
-ts_glims_long <- ts_glims_wide %>% 
-    pivot_longer(cols = c(rgnd, albedo), names_to = "band", values_drop_na = TRUE)
-```
 
 
+# fig6 plot
 
-
-# plot
 
 ```{r}
-ts_custom_long %>% 
-  mutate(band = band %>% fct_relevel("rgnd")) %>% # factor RGND before albedo
-  ggplot(aes(x = date, y = value, color = platform)) +
-  geom_line() +
-  facet_grid(rows = vars(band), cols = vars(site), scales = "free")
-```
-Aqua is very jumpy-- 
-Dont show albedo
-
-```{r}
+# make pretty for plotting
 plot_dat <- ts_custom_wide %>% 
-  filter(platform %in% c("s2", "l8", "terra")) %>% 
+  filter(platform %in% c("s2", "l8", "terra"),
+         # remove sept 8 for catamount
+         !(platform=="s2" & date==ymd("2020-09-08"))
+         ) %>% 
   mutate(platform = platform %>% 
-           fct_relevel(c("s2", "l8", "terra")) %>%# order factors
            fct_recode("Sentinel-2"="s2",
-                      "Landast-8"="l8",
-                      "MODIS/Terra"="terra")) 
+                      "Landsat-8"="l8",
+                      "MODIS/Terra"="terra") %>% 
+           fct_relevel(c("Sentinel-2", "Landsat-8")),
+         site = site %>% fct_relevel("vowell")) 
 plot_dat$platform %>% levels()
 
-pp <- plot_dat %>% 
-  ggplot(aes(x = date, y = rgnd, color = platform)) +
-  facet_grid(rows = vars(site %>% fct_relevel("vowell"))) +
-  # MODIS layer
-  geom_point(alpha = 0.5, size = 1, data = plot_dat %>% 
-              filter(platform == "terra") ) +
-  # stat_smooth(method = "loess", size = 0,
-  #           data = plot_dat %>% 
-  #             filter(platform == "terra")) +
-  # S2 and L8 layers
-  # geom_line(alpha = 0.5, size = 1, data = plot_dat %>% 
-  #             filter(platform %in% c("l8", "s2")) ) +
-  geom_point() +
-  labs(x = "Date", y = "RGND", color = "Satellite") +
-  theme_minimal() +
-  geom_hline(yintercept = 0) 
-pp
-# ggsave(here("figs/satellite_time_series.pdf"), height = 5, width = 7)
-```
-Odd drop in mid August on Cat, not due to clouds. Late season estimates not reliable, bare ice showing. 
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
 
-
-
- up to 0.05 on July 30, this corresponds to an estimated cell density of 2.5e8 per 31 days, or a growth rate of +8 million cells per square meter per day. 
-
-# compare time series polygons
-
-```{r}
-plot_dat2 <- ts_custom_wide %>% add_column(polygon = "bloom") %>% 
-  bind_rows(ts_modis_wide %>% add_column(polygon = "modis")) %>% 
-  filter(platform %in% c("s2", "l8", "terra")) %>% 
-  mutate(platform = platform %>% 
-           fct_relevel(c("s2", "l8", "terra")) %>%# order factors
-           fct_recode("Sentinel-2"="s2",
-                      "Landast-8"="l8",
-                      "MODIS/Terra"="terra")) 
-
-
-pp3 <- plot_dat2 %>% 
-  ggplot(aes(x = date, y = rgnd, color = platform, shape = polygon)) +
-  facet_grid(rows = vars(site %>% fct_relevel("vowell"))) +
-  # MODIS layer
-  # geom_point(alpha = 0.5, size = 1, data = plot_dat %>% 
-  #             filter(platform == "terra") ) +
-  # stat_smooth(method = "loess", size = 0,
-  #           data = plot_dat %>% 
-  #             filter(platform == "terra")) +
-  # S2 and L8 layers
-  # geom_line(alpha = 0.5, size = 1, data = plot_dat %>% 
-  #             filter(platform %in% c("l8", "s2")) ) +
-  geom_point() +
-  geom_line() +
-  labs(x = "Date", y = "RGND", color = "Satellite") +
-  theme_minimal() +
-  geom_hline(yintercept = 0) 
-pp3
-```
-
-
-
-# consensus RGND phenology
-
-Approach: establish a "peak bloom" date for each glacier, then
-take the mean RGND for each platform/site within +/- n days of the peak date. 
-
-I will use MODIS to establish peak bloom, since there is more data. 
-
-
-## apply smooth spline to Terra
-```{r}
-nk <- 10
-
-terra <- ts_custom_wide %>% 
-  filter(platform=="terra") %>% 
-  group_by(site) %>% # split into vowell and cat time series
-  mutate(yday = yday(date)) %>% 
-  select(platform, site, yday, rgnd)
-
-spl <-
-  terra %>% 
-  nest() %>%
-  ungroup() %>% # nest automatically groups.. why?
-  mutate(mod = map(data, ~smooth.spline(x=.x$yday, y=.x$rgnd, nknots = nk)),
-         aug = map(mod, broom::augment)) %>% 
-  unnest(cols = c(aug))
-
-# sanity check
-spl %>% 
-  ggplot(aes(x = x)) +
-  geom_line(aes(y = y)) +
-  geom_line(aes(y = .fitted), color = "red") +
-  facet_grid(rows = vars(site))
-```
-
-## get peak bloom date from terra
-
-```{r}
-max_smooth_yday <- spl %>% 
-  group_by(site) %>% 
-  filter(.fitted == max(.fitted)) %>% 
-  select(site, x)
-
-window <- 3 # includes
-
-peak_data <- terra %>%
-  left_join(max_smooth_yday) %>% 
-  mutate(min = x - window,
-         max = x + window) %>% 
-  filter(yday >= min, 
-         yday <= max) %>% 
-  ungroup() %>% 
-  select(platform, site, yday, rgnd) # rgnd is the actual data, not smoothed
-
-peak_data %>% 
-  ggplot(aes(x = yday, y= rgnd)) +
-  geom_point() +
+p1 <- plot_dat %>% 
+  ggplot(aes(x = date, y = rgnd, color = platform, shape = platform)) +
   facet_grid(rows = vars(site)) +
-  geom_boxplot()
-```
-
-Peak bloom date: 
-vowell 210 = Jul 29
-cat 215 = Aug 3
-
-Peak RGND (from S2)
-vowell: 0.05 (7-28)
-cat: 0.039 (7-30i)
-
-Peak bloom week: (+/- 3 days of peak bloom day):
-
-vowell	213	208	-- jul26 aug1
-cat 218	212		-- jul31 aug 6
-
-### add consensus to plot
-```{r}
-cons <- tibble(
-  platform = "consensus",
-  site = c(rep("vowell", 3), rep("cat", 3)),
-  date = ymd(c("2020-07-01", "2020-07-28", "2020-09-01", "2020-07-01", "2020-07-30", "2020-09-01")),
-  rgnd = c(0,0.05, 0, 0,0.039, 0)
-)
-
-
-pp2 <- plot_dat %>%
-  ggplot(aes(x = date, y = rgnd, color = platform)) +
-  facet_grid(rows = vars(site %>% fct_relevel("vowell"))) +
-  geom_line(data = cons, color = "purple", size = 2, alpha = 0.3, lineend='round') +
-  geom_point() +
+  geom_point(alpha =0.7) +
   labs(x = "Date", y = "RGND", color = "Satellite") +
   theme_minimal() +
-  geom_hline(yintercept = 0, alpha = 0.7) +
-  theme(panel.spacing = unit(2, "lines")) #+
-  # geom_smooth(method = "lm", formula = y~poly(x,2), 
-  #             se = FALSE,
-  #             data = plot_dat %>% 
-  #               filter(platform=="Sentinel-2") )
-
-pp2
-
-# ggsave(here("figs/final_fig5.pdf"), width = 7, height = 5)
+  geom_hline(yintercept = 0) +
+  scale_color_manual(values = gg_color_hue(3)) +
+  theme(panel.spacing = unit(2, "lines")) 
+p1
 ```
 
 
+## sentinel linear interpolation
 
-## compare mean RGND estimates between satellites for peak bloom week
 ```{r}
-# get the min/max days from the terra peak data for filtering the rest of the dataset
-range <- max_smooth_yday %>% 
-  mutate(max = x+window, min = x-window)
-
-# filter the L8/S2 data to within this date range
-all_peak_data <- ts_custom_wide %>% 
-  filter(platform %in% c("s2", "l8")) %>% 
-  mutate(yday = yday(date)) %>% 
-  left_join(range, by = "site") %>%
-  group_by(site, platform) %>% 
-  filter(yday>=min, yday<=max) %>% 
-  select(platform, site, yday, rgnd) %>% 
-  # tack on the terra data
-  bind_rows(peak_data) %>% 
-  ungroup()
-  
-all_peak_data %>% 
-  ggplot(aes(x = platform, y = rgnd)) +
-  geom_boxplot() +
-  facet_wrap(vars(site)) +
-  ggtitle("peak bloom RGND estimates")
+s2_interp <- plot_dat %>% 
+  filter(platform=="Sentinel-2", 
+         # just July-Aug data
+         month(date) %in% c(7,8)) %>% 
+  # set 0 on Jul 1 and Sept 1
+  bind_rows(tribble(
+    ~site, ~date, ~rgnd,
+    "cat", ymd("2020-07-01"), 0,
+    "cat", ymd("2020-09-01"), 0,
+    "vowell", ymd("2020-07-01"), 0,
+    "vowell", ymd("2020-09-01"), 0
+  )) %>% 
+  # convert to tsibble to use handy fill_gaps()
+  as_tsibble(key = site) %>%
+  # make missing values explicit NA
+  fill_gaps() %>% 
+  # linear interpolate NA
+  mutate(rgnd = zoo::na.approx(rgnd)) %>% 
+  as_tibble() %>% 
+  # add stuff back in for plotting
+  mutate(platform="Sentinel-2",
+         site = site %>% fct_relevel("vowell"))
 ```
-Sentinel > Terra > Landsat
 
-larger grid cells, signal is dampened by more noise
-The landsat had some cloud issues, disregard. 
+## export final plot
 
-In table format, individually
 ```{r}
-means <- all_peak_data %>%
-  group_by(platform, site) %>% 
-  summarise(mean(rgnd), n(), sd(rgnd)) %>% 
-  ungroup()
-means
+p1 +
+  # geom_line(stat="smooth", method = "loess", data= curve_dat, alpha = 0.5, size = 1, color = "purple")
+  geom_line(data= s2_interp, alpha = 0.5, size = 1, color = gg_color_hue(3)[1]) +
+  geom_point(alpha = 0.7)
+
 ```
-How much lower is Terra from S2?
 
 ```{r}
-0.05 - 0.041 # 0.009
-0.036 - 0.032 # 0.004
-mean(c(0.009, 0.004)) # av difference
-
-0.041/0.05 # .82
-0.032/0.036 #.888
-mean(c(0.888, .82))
+ggsave(here("figs/satellite_time_series.pdf"), height = 5, width = 7)
 ```
 
 
 
 
-The second of the three S2 images for cat had some cloud issues as well, disregard. 
+# Compare satellite RGND w/in 5 day window
 
-Just the use the max S2 as our best estimate
-
-
-###compare satellite RGND within 1 day window
-
+## pairs plot
 ```{r}
-date_bins <- ts_custom_wide %>% 
-  filter(!platform %>% str_detect("Snow")) %>% 
-  # bin time into discrete 3 day intervals
-  mutate(date_bin = date %>% yday() %>% cut_interval(n=30)) %>% 
+date_bins <- plot_dat %>% 
+  # bin time into discrete 4 day intervals
+  mutate(date_bin = date %>% yday() %>% cut_width(width=5)) %>% 
   group_by(platform, site, date_bin) %>% 
   summarise(rgnd = mean(rgnd)) %>% 
   ungroup() %>% 
   pivot_wider(names_from = "platform", values_from = "rgnd")
 
-date_bins %>%
-  select(-date_bin, -aqua, -l8) %>% 
-  ggpairs(colums = 2:4, ggplot2::aes(colour=site))
-```
-
-
-```{r}
-date_bins %>%
-  select(-date_bin, -site, -aqua) %>% 
-  ggpairs(colums = 2:4)
-```
-
-
-```{r}
+# check that cut_width works as expected
 date_bins %>% 
-  select(site, s2, terra) %>% 
-  drop_na() %>% 
-  ggplot(aes(x = s2, y = terra, color = site)) +
-  geom_point() +
-  geom_smooth(method = "lm", se=FALSE) +
-  labs(x = "Sentinel-2 L2A RGND", y="MODIS/Terra RGND", color = "Site") +
-  theme_minimal()
+  distinct(date_bin) %>% 
+  arrange(date_bin)
+```
+
+Comparison of mean values for each 5 day time interval
+```{r}
+date_bins %>%
+  select(where(is.numeric)) %>% 
+  ggpairs() 
+```
+## peak bloom boxplot
+
+
+```{r}
+peak_yday <- yday(ymd('2020-07-28'))
+# i can see this date bin is (208,212], thats Jul 27 -Jul 30
+
+
+plot_dat %>% 
+  filter(date>ymd("2020-07-26"), date <= ymd("2020-07-30")) %>% 
+  ggplot(aes(x = platform, y = rgnd)) +
+  geom_boxplot() +
+  facet_wrap(vars(site))
+```
+defining "peak week" as Jul 27 -Jul 30
+
+# algae stats during peak week
+
+
+## bloom polygon
+
+Apply regression estimates:
+
+cell abundance: 6.95 +/- 3.11 RGND
+cell area: 216 +/- 78 RGND
+TOC: 16 +/- 6.5 RGND
+TN: 365 +/-142 RGND
+delta_albedo = 0.9 +/- 0.34 RGND 
+
+```{r}
+# from GEE
+bloom_polygon_area <- tribble(
+  ~site, ~area_m2,
+  "vowell", 1684302,
+  "cat", 1918716
+)
 ```
 
 
-# Glacier stats
-
-## whole glacier
-
 ```{r}
-# approach: take mean RGND over glacier area, apply algae abundance models, multiply by glacier area
-# this should give the same result as individually summing each grid cell's algae productivity
-
-max_algae_glims <-
-  ts_glims_wide %>% 
+get_max_s2_rgnd <- function(df){
+  df %>% 
   filter(platform == "s2") %>% 
   group_by(site) %>% 
-  summarise(max_rgnd = max(rgnd, na.rm = TRUE)) %>% 
-  # applying the algae abundance models
-  mutate(max_frac_red = max_rgnd * 154, # percent cell area
-         max_cell_density = max_rgnd * 5.4, # bil cells / m2
-         max_toc = 12.9*max_rgnd, # g/m2
-         max_tn = 376*max_rgnd, # mg/m2
-         max_delta_albedo = 0.88 * max_rgnd, # on the whole glacier
-         glacier_area_m2 = c(5.85e6, 6.04e6), # m2
-         total_cells = max_cell_density * glacier_area_m2 * 1e9, 
-         total_toc_kg = (max_toc * glacier_area_m2)/1000, # convert from g to kg
-         total_tn_kg = (max_tn * glacier_area_m2)/(1000*1000)) # convert from mg to kg
-         
-tt <- max_algae_glims %>% 
-  arrange(max_delta_albedo) %>% 
-  rename(mean_rgnd = max_rgnd, cell_area_percent_cov = max_frac_red, 
-         cell_density_bil_cell_per_m2 = max_cell_density, 
-         toc_g_m2 = max_toc, 
-         tn_mg_m2 = max_tn, 
-         delta_albedo = max_delta_albedo, 
-         polygon_area_m2 = glacier_area_m2) %>% 
-  pivot_longer(-site) %>% 
-  pivot_wider(names_from = site) %>% 
-  # control number of sig figs
-  mutate_if(is.numeric, format, digits=3,nsmall = 0)
-tt %>% 
-  kbl(format = "latex", booktabs = TRUE) %>% 
-  kable_styling(latex_options = "striped")
+  summarise(rgnd = max(rgnd, na.rm = TRUE))
+}
+# ts_custom_wide %>% get_max_s2_rgnd()
+
+
+estimate_bloom_stats <- function(rgnd_df, polygon_area_df){
+  rgnd_df %>%
+    left_join(polygon_area_df) %>% 
+    mutate(
+      cell_count = 6.95 * rgnd, # bil cells / m2
+      cell_count_ci = 3.11 * rgnd,
+      cell_area = 216 * rgnd, # percent cell area
+      cell_area_ci = 78 * rgnd,
+      toc = 16 * rgnd, # g/m2
+      toc_ci = 6.5 * rgnd,
+      tn = 365 * rgnd, # mg/m2
+      tn_ci = 142 * rgnd,
+      delta_albedo = 0.9 * rgnd, # delta albedo
+      delta_albedo_ci = 0.34 * rgnd, 
+      total_cells = cell_count * area_m2, # bil cells
+      total_cells_ci = cell_count_ci * area_m2, 
+      total_toc_kg = (toc * area_m2)/1000, # kg
+      total_toc_kg_ci = (toc_ci * area_m2)/1000, 
+      total_tn_kg = (tn * area_m2)/(1000*1000), # kg
+      total_tn_kg_ci = (tn_ci * area_m2)/(1000*1000),
+    ) %>% 
+    # reformat table
+    pivot_longer(-site) %>% 
+    mutate(type = ifelse(name %>% str_detect("_ci"), "confint", "value"),
+           name = name %>% str_remove("_ci")) %>% 
+    pivot_wider(names_from = c(site, type)) %>% 
+    relocate(name, vowell_value, vowell_confint) %>% 
+    mutate_if(is.numeric, format, digits=3, nsmall = 0) %>% 
+    mutate(name = name %>% fct_recode(bil_cells_per_m2 = "cell_count",
+                                      cell_area_percent_cov = "cell_area", 
+                                      toc_g_m2 = "toc",
+                                      tn_mg_m2 = "tn", 
+                                      `total_cells_10^9` = "total_cells"))
+}
+
+bloom_polygon_stats <- ts_custom_wide %>% 
+  get_max_s2_rgnd() %>% 
+  estimate_bloom_stats(polygon_area_df = bloom_polygon_area)
+
+
+bloom_polygon_stats %>% 
+  kbl() %>% 
+  kable_classic(full_width = F, html_font = "Cambria")
 ```
-At peak bloom:
-Vowell: 2.5% coverage, albedo -1.4%, 1245 kg TOC and 36 kg TN
-Catamount: 3.2% coverage, albedo -1.8%, 1585 kg TOC, 46 kg TN
+
+### compare w MODIS albedo
+```{r}
+ts_custom_wide %>% 
+  filter(date<"2020-09-01") %>% 
+  mutate(site = site %>% fct_relevel("vowell")) %>% 
+  drop_na(albedo) %>% 
+  ggplot(aes(x = date, y = albedo)) +
+  geom_point() +
+  facet_grid(rows = vars(site)) +
+  geom_smooth(se = FALSE) +
+  ggtitle("MODIS snow albedo over bloom polygon")
+```
+Albedo decline in July of 
+vowell: 0.5 - 0.35 ~= 0.15
+catamount: 0.55 - 0.45 ~= 0.1
+
+Our regression predicts a decline of:
+vowell: 0.05
+catamount: 0.035
 
 
-Applying G-D melt model, algae melt = 0.13 sqrt(area in cm2/l)
+## glacier polygon
 
 ```{r}
-melt <- function(rgnd){
-  cell_dens <- rgnd * 1234 # my model, in cm2/L
-  0.13*sqrt(cell_dens)
-}
-melt(0.016) # vowell
-melt(0.021) # cat
+# from GEE
+glacier_polygon_area <- tribble(
+  ~site, ~area_m2,
+  "vowell", 6.03739e6,
+  "cat", 5.84705e6
+)
+
+glacier_polygon_stats <- ts_custom_wide %>% 
+  get_max_s2_rgnd() %>% 
+  estimate_bloom_stats(polygon_area_df = glacier_polygon_area)
+
+
+glacier_polygon_stats %>% 
+  kbl() %>% 
+  kable_classic(full_width = F, html_font = "Cambria")
 ```
 
 
 
-Is the estimated delta albedo reasonable? check the MODIS albedo data
+
+### compare with MODIS snow albedo
+
 ```{r}
 ts_glims_wide %>% 
   filter(date<"2020-09-01") %>% 
   drop_na(albedo) %>% 
   ggplot(aes(x = date, y = albedo)) +
   geom_point() +
-  facet_grid(rows = vars(site)) #+
-  # geom_smooth(method = "lm", se = FALSE)
-```
-The first point in July is ~0.5. The last points in late July oscillate around 0.4. 
-so let's say MODIS estimates a delta albedo of 0.5 - 0.4 = 0.1 (July), or 10%
-
-This is much higher than our estimate of 1-2%, but we would expect some decline in albedo in the absence of snow algae. so 8-9% albedo decline is due to snowmelt?
-
-
-### radiative forcing
-
-
-
-Approximate bloom density as abs function to integrate RF over the summer (Jul - Aug)
-```{r}
-my_site <- "cat"
-
-max_delta_albedo <- max_algae_glims %>% 
-  filter(site == my_site) %>% 
-  pull(max_delta_albedo)
-
-
-
-# delta_albedo_approx %>% ggplot(aes(x = date, y= delta_albedo)) + geom_line()
-# srad_clean %>% ggplot(aes(x = date, y = srad)) + geom_line() +facet_grid(rows = vars(site))
-
-# srad_clean %>% 
-#   filter(site==my_site) %>% 
-#   select(date, srad) %>% 
-#   left_join(delta_albedo_approx, by = "date") %>% 
-#   mutate(rf = srad * delta_albedo) %>% 
-#   summarise(rf = mean(rf))
-  
-```
-
-Vowell bloom has a RF of 2.98 W/m2 from July - August averaged over the entire glacier area
-Cat was 3.85
-
-
-## just the "bloom area"
-
-```{r}
-max_algae_custom <-
-  ts_custom_wide %>% 
-  filter(platform == "s2") %>% 
-  group_by(site) %>% 
-  summarise(max_rgnd = max(rgnd, na.rm = TRUE)) %>% 
-  # applying the algae abundance models
-  mutate(max_frac_red = max_rgnd * 154, # percent cell area
-         max_cell_density = max_rgnd * 5.4, # bil cells / m2
-         max_toc = 12.9*max_rgnd, # g/m2
-         max_tn = 376*max_rgnd, # mg/m2
-         max_delta_albedo = 0.88 * max_rgnd, 
-         bloom_area_m2 = c(1.9e6, 2e6), # m2
-         total_cells = max_cell_density * bloom_area_m2 * 1e9, 
-         total_toc_kg = (max_toc * bloom_area_m2)/1000, # convert from g to kg
-         total_tn_kg = (max_tn * bloom_area_m2)/(1000*1000)) # convert from mg to kg
-
-tt2 <- max_algae_custom %>% 
-  arrange(max_delta_albedo) %>% 
-  rename(mean_rgnd = max_rgnd, 
-         cell_area_percent_cov = max_frac_red, 
-         cell_density_bil_cell_per_m2 = max_cell_density, 
-         toc_g_m2 = max_toc, 
-         tn_mg_m2 = max_tn, 
-         delta_albedo = max_delta_albedo, 
-         polygon_area_m2 = bloom_area_m2) %>% 
-  pivot_longer(-site) %>% 
-  pivot_wider(names_from = site) %>% 
-  select(name, vowell, cat) %>% 
-  # control number of sig figs
-  mutate_if(is.numeric, format, digits=3,nsmall = 0)
-tt2 %>% 
-  kbl(format = "latex", booktabs = TRUE) %>% 
-  kable_styling(latex_options = "striped")
-```
-
-delta albedo is the amount by which our RGND-albedo model predicts snow algae to decrease albedo (Fig 3B)
-
-
-
-total abundance:
-bloom polygon likely underestimate (boundaries too small)
-glacier polygon likely overestimate of total prod (false positives)
-
-
-
-```{r}
-melt(0.05)# 10.2 mm SWE/day
-melt(0.039) #9 mm SWE/day
-```
-1 cm water over the entire bloom polygon area, is a volume of 
-```{r}
-# in units of m2 and m
-1.6e6*0.012 # 19,000 m3/day
-2.1e6*0.009 # 19,000 m3 per day
-```
-
-
-
-Compare to the MODIS albedo (using the custom polygon)
-
-```{r}
-ts_custom_wide %>% 
-  filter(date<"2020-08-01", date>"2020-07-01") %>% 
-  drop_na(albedo) %>% 
-  ggplot(aes(x = date, y = albedo)) +
-  geom_point() +
   facet_grid(rows = vars(site)) +
-  ggtitle("bloom area, MODIS albedo") +
-  geom_smooth(method="lm", se=FALSE)
-```
-also looks like a 10% drop in albedo in July. But this is very few grid cells, at this resolution hard to say. If our model predicts a drop of ~4%. 
-snowdepth could effect this. showing dark ice beneath. 
-What was the depth under our albedo measurements? but three sites should average this out...
-
-
-## fill in missing vals from consensus
-
-expand
-```{r}
-cons2 <- cons %>% # from consensus for bloom polygon
-  complete(site, date = seq(min(date), max(date), by = "day")) %>% 
-  group_by(site) %>% 
-  mutate(platform = "consensus",
-         rgnd = zoo::na.approx(rgnd),
-         delta_albedo = 0.88 * rgnd)
-cons2
+  geom_smooth(se = FALSE) +
+  ggtitle("MODIS snow albedo over glacier polygon")
 ```
 
-Radiative forcing estimate for bloom polygon
-```{r}
-srad_clean %>% 
-  select(date, srad) %>% 
-  left_join(cons2, by = "date") %>% 
-  mutate(rf = srad * delta_albedo) %>% 
-  group_by(site) %>% 
-  summarise(rf = mean(rf))
-  
-```
-Just over the bloom area, RF of 9.3 and 7.2 over vowell and catamount blooms respectively from Jul-Aug
 
-
-
-
-## MODIS polygons
-
-Compare the MODIS albedo vs the predicted algae albedo effect (delta albedo)
-Might be less of a discrepancy omitting the MODIS grid cells that overlap with seasonal snow cover off the glacier
+# summer radiative forcing
 
 ```{r}
-ts_modis_wide %>% 
-  filter(date<"2020-08-01", date>"2020-07-01") %>% 
-  drop_na(albedo) %>% 
-  ggplot(aes(x = date, y = albedo)) +
-  geom_point() +
-  facet_grid(rows = vars(site)) +
-  ggtitle("modis area, MODIS albedo") +
-  geom_smooth(method="lm", se=FALSE)
+summer_rf <- function(srad_df, delta_albedo_df){
+  srad_df %>% 
+    filter(month(date) %in% c(7,8)) %>% 
+    select(date, srad) %>% 
+    left_join(delta_albedo_df, by = "date") %>% 
+    mutate(rf = srad * delta_albedo,
+           rf_ci = srad * delta_albedo_ci) %>% 
+    group_by(site) %>% 
+    summarise(rf_wm2 = mean(rf), rf_ci = mean(rf_ci))
+}
 ```
-This looks pretty much the same
+
+
+Using S2 mean RGND within bloom polygon
 
 ```{r}
-max_algae_modis <- ts_modis_wide %>% 
-  filter(platform %>% str_detect( "s2")) %>% # forgot to clip off the ".csv"
-  group_by(site) %>% 
-  summarise(max_rgnd = max(rgnd, na.rm = TRUE)) %>% 
-  # applying the algae abundance models
-  mutate(max_frac_red = max_rgnd * 154, # percent cell area
-         max_cell_density = max_rgnd * 5.4, # bil cells / m2
-         max_toc = 12.9*max_rgnd, # g/m2
-         max_tn = 376*max_rgnd, # mg/m2
-         max_delta_albedo = 0.88 * max_rgnd, 
-         bloom_area_m2 = c(1.9e6, 2e6), # m2
-         total_cells = max_cell_density * bloom_area_m2 * 1e9, 
-         total_toc_kg = (max_toc * bloom_area_m2)/1000, # convert from g to kg
-         total_tn_kg = (max_tn * bloom_area_m2)/(1000*1000)) # convert from mg to kg
-         
-max_algae_modis %>% arrange(max_delta_albedo)
+s2_interp_d_albedo <- s2_interp %>% 
+  mutate(delta_albedo = 0.9 * rgnd, 
+         delta_albedo_ci = 0.34 * rgnd) %>% 
+  select(-albedo)
+
+wx_clean %>% 
+  select(site, date, srad) %>% 
+  summer_rf(delta_albedo_df = s2_interp_d_albedo)
 ```
-Same... 
+
+Mean July-August RF:
+
+vowell: 10.6 +/- 4 W/m2 
+cat: 7.4 +/- 2.8 W/m2
 
 
-# compare custom polygon with MODIS grid cells
+
+
+
+
+# compare RGND time series with different polygons
 
 
 ```{r}
-# compare <- ts2_wide %>% 
-#   rename(rgnd_custom_poly = rgnd, albedo_custom_poly = albedo) %>% 
-#   left_join(ts_wide)
-# 
-# compare %>% 
-#   ggplot(aes(x = rgnd, y = rgnd_custom_poly)) +
-#   geom_point() +
-#   facet_wrap(vars(platform, site), scales = "free")
+plot_dat2 <- ts_custom_wide %>% add_column(polygon = "bloom") %>% 
+  bind_rows(ts_modis_wide %>% add_column(polygon = "modis")) %>% 
+  bind_rows(ts_glims_wide %>% add_column(polygon = "glacier")) %>% 
+  filter(platform %in% c("s2", "l8", "terra")) %>% 
+  mutate(platform = platform %>% 
+           fct_relevel(c("s2", "l8", "terra")) %>%# order factors
+           fct_recode("Sentinel-2"="s2",
+                      "Landast-8"="l8",
+                      "MODIS/Terra"="terra")) 
+
+
+plot_dat2 %>% 
+  ggplot(aes(x = date, y = rgnd, color = polygon, shape = polygon)) +
+  facet_grid(rows = vars(site %>% fct_relevel("vowell")), cols = vars(platform)) +
+  geom_point(alpha = 0.5) +
+  # geom_line(aes(group=date)) +
+  labs(x = "Date", y = "RGND") +
+  theme_minimal() +
+  geom_hline(yintercept = 0)
 ```
+
+
+
 
 
 
@@ -755,158 +519,25 @@ my_wx %>%
 
 
 
+# Applying G-D melt model, algae melt = 0.13 sqrt(area in cm2/l)
 
-<!-- # scratch -->
+```{r}
+melt <- function(rgnd){
+  cell_dens <- rgnd * 1234 # my model, in cm2/L
+  0.13*sqrt(cell_dens)
+}
+melt(0.016) # vowell
+melt(0.021) # cat
 
-
-
-
-
-<!-- ```{r, fig.width = 8, fig.height= 3} -->
-<!-- p1_dat <- ts_long %>%  -->
-<!--   filter(band=="rgnd_mean", !(platform %in% c("aqua8", "terra8", "aqua"))) %>% # only show the 8 day MODIS composite -->
-<!--   mutate(platform = case_when(#platform == "aqua" ~ "Aqua", # (8 day) -->
-<!--                               platform == "l8" ~ "Landsat-8", -->
-<!--                               platform == "s2" ~ "Sentinel-2", -->
-<!--                               platform == "terra" ~ "Terra"), -->
-<!--                               # platform == "terra8" ~ "Terra", -->
-<!--                               # platform == "aqua8" ~ "Aqua"), -->
-<!--          platform = platform %>% fct_relevel("Sentinel-2", "Landsat-8", "Terra"),#, "Aqua"), #"Aqua (8 day)", "Terra (8 day)" -->
-<!--          name = name %>% str_to_title(), -->
-<!--          frac_red = (-0.02 + 2.25 * mean)*100, -->
-<!--          toc_g_per_m2 = 0.176 + 15.8 * mean, -->
-<!--          frac_red = ifelse(frac_red<0, 0, frac_red), -->
-<!--          toc_g_per_m2 = ifelse(toc_g_per_m2<0, 0, toc_g_per_m2), -->
-<!--          ) -->
-
-<!-- p1 <- p1_dat %>%  -->
-<!--   # remove the low outlier in landsat-8 -->
-<!--   # filter(!(platform=="Landsat-8" & name == "Catamount" & date>ymd("2020-08-17") & date<ymd("2020-08-19"))) %>%  -->
-<!--   # remove the high outliers -->
-<!--   filter(frac_red<10) %>% -->
-<!--   ggplot(aes(x = date, y = frac_red, color = platform)) + -->
-<!--   # geom_line(alpha = 1) + -->
-<!--   # geom_smooth(se=FALSE) + -->
-<!--   # geom_smooth(method = "gam", se=FALSE, formula = y ~ s(x, bs = "tp"), # increase wiggliness of spline? -->
-<!--               # data = p1_dat %>% filter(platform != "Landsat-8")) + -->
-<!--   facet_grid(cols = vars(name)) + -->
-<!--   labs(y = "Percent snow algae cell coverage", x = "", color = "Satellite") + -->
-<!--   theme_minimal() -->
-<!-- p1 -->
-<!-- ggsave(here("figs/time_series.pdf"), height=3, width=12) -->
-<!-- ``` -->
-<!-- LOESS might work if we can filter out the 0's (cloudy images) -->
-<!-- set df to n-1 for each group?  -->
-
-<!-- ```{r, fig.width = 8, fig.height= 3} -->
-<!-- p1_dat %>%  -->
-<!--   ggplot(aes(x = date, y = toc_g_per_m2, color = platform)) + -->
-<!--   geom_line() + -->
-<!--   # geom_point(alpha = 0.5) +  -->
-<!--   facet_grid(cols = vars(name)) + -->
-<!--   labs(y = "Total organic carbon (g/m2)", x = "", color = "Satellite") + -->
-<!--   theme_minimal() -->
-<!-- ``` -->
-
-
-<!-- ```{r} -->
-<!-- # nk <- 10 -->
-<!-- #  -->
-<!-- # # splines <-  -->
-<!-- #   ts_wide %>% -->
-<!-- #   group_by(name, platform) %>% -->
-<!-- #   select(rgnd_mean, albedo_mean) %>%  -->
-<!-- #   nest() %>% -->
-<!-- #   ungroup() %>% -->
-<!-- #   mutate(mod = map(data, ~smooth.spline(x=.x$wvl, y=.x$tgt_ref_ratio, nknots = nk)), -->
-<!-- #          aug = map(mod, broom::augment)) -->
-<!-- #  -->
-<!-- # # plot a sample -->
-<!-- # set.seed(123) -->
-<!-- # splines %>% -->
-<!-- #   slice_sample(n=10) %>% -->
-<!-- #   unnest(cols = c(aug)) %>% -->
-<!-- #   ggplot(aes(x = x)) + -->
-<!-- #   geom_line(aes(y = y, group = scan_id)) + -->
-<!-- #   geom_line(aes(y = .fitted, group = scan_id), color = "red")  -->
-<!-- #  -->
-<!-- # # plot all -->
-<!-- # splines %>% -->
-<!-- #   unnest(cols = c(aug)) %>% -->
-<!-- #   ggplot(aes(x = x)) + -->
-<!-- #   geom_line(aes(y = y, group = scan_id)) + -->
-<!-- #   geom_line(aes(y = .fitted, group = scan_id), color = "red") -->
-<!-- ``` -->
-
-<!-- ```{r, fig.width = 8, fig.height= 3} -->
-<!-- nk <- 10 -->
-
-<!-- albedo_long <- tidied %>%  -->
-<!--   filter(band=="albedo_mean") %>%  -->
-<!--   mutate(platform = platform %>% str_split_n("_", 1) %>% str_to_title(), -->
-<!--          name = name %>% str_to_title()) %>%  -->
-<!--   select(-band) # no NAs-- smooth.spine cannot handle NA -->
-
-<!-- test <- albedo_long %>%  -->
-<!--   filter(name == "Catamount", platform == "Terra") %>%  -->
-<!--   select(date, mean) -->
-
-<!-- smooth.spline(test, nknots = nk) %>% -->
-<!--   augment(test) %>% -->
-<!--   ggplot(aes(x = date)) + -->
-<!--   geom_line(aes(y = mean)) + -->
-<!--   geom_line(aes(y = .fitted), color = "red") -->
-<!-- ``` -->
-
-
-<!-- ```{r, fig.width = 8, fig.height= 3} -->
-<!-- smooth_albedo <- function(site, sat){ -->
-<!--   twoCol <- albedo_long %>%  -->
-<!--     filter(name == site, platform == sat) %>%  -->
-<!--     select(date, mean) -->
-
-<!--   smooth.spline(twoCol, nknots = nk) %>% -->
-<!--     augment(twoCol) %>% -->
-<!--     add_column(name = site, platform = sat, .before = 1) -->
-<!-- } -->
-<!-- catamount_aqua_albedo <- smooth_albedo("Catamount", "Aqua") -->
-<!-- catamount_terra_albedo <- smooth_albedo("Catamount", "Terra") -->
-<!-- vowell_aqua_albedo <- smooth_albedo("Vowell", "Aqua") -->
-<!-- vowell_terra_albedo <- smooth_albedo("Vowell", "Terra") -->
-
-<!-- albedo_splines <- bind_rows(catamount_aqua_albedo,catamount_terra_albedo,vowell_aqua_albedo,vowell_terra_albedo) -->
-<!-- ``` -->
-
-<!-- use the same colors as before to plot satellites -->
-<!-- ```{r} -->
-<!-- gg_color_hue <- function(n) { -->
-<!--   hues = seq(15, 375, length = n + 1) -->
-<!--   hcl(h = hues, l = 65, c = 100)[1:n] -->
-<!-- } -->
-<!--  # + -->
-<!--  #  scale_color_manual(values = gg_color_hue(4)[3:4]) # aqua and terra -->
-<!-- ``` -->
-
-
-<!-- ```{r, fig.width = 8, fig.height= 3} -->
-<!-- # plot all -->
-<!-- albedo_splines %>% -->
-<!--   filter(platform=="Terra") %>%  -->
-<!--   ggplot(aes(x = date)) + -->
-<!--   geom_line(aes(y = mean), alpha = 0.2) + # raw -->
-<!--   # geom_line(aes(y = .fitted, group = platform)) + # gam -->
-<!--   geom_smooth(aes(y = mean), se = FALSE, color =gg_color_hue(3)[3]) + # LOESS -->
-<!--   facet_grid(cols = vars(name)) + -->
-<!--   labs(y = "Terra Albedo", x = "") + -->
-<!--   theme_minimal() -->
-
-<!-- ggsave(here("figs/albedo_ts.pdf"), height=3, width=12 ) -->
-<!-- ``` -->
-
-
-<!-- Can we re-create MODIS albedo by estimating from RGND? -->
-
-<!-- ```{r} -->
-
-<!-- ``` -->
+```
+```{r}
+melt(0.05)# 10.2 mm SWE/day
+melt(0.039) #9 mm SWE/day
+```
+1 cm water over the entire bloom polygon area, is a volume of 
+```{r}
+# in units of m2 and m
+1.6e6*0.012 # 19,000 m3/day
+2.1e6*0.009 # 19,000 m3 per day
+```
 

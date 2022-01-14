@@ -1,0 +1,423 @@
+---
+title: "Snow algae abundance regression"
+output: rmarkdown::github_document
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(fs)
+library(janitor)
+library(GGally) 
+library(broom) 
+library(grid)
+# library(brms)
+```
+
+# read in data
+
+```{r}
+cellcount <- read_csv(here("data/cellcount/final_cell.csv"), col_types = cols()) 
+biomass <- read_csv(here("data/biomass/tidy_biomass.csv"), col_types = cols()) 
+
+# convolved sample scans
+as_s2 <- read_csv(here("data/radiometer/as_s2.csv"), col_types = cols())
+as_l8 <- read_csv(here("data/radiometer/as_l8.csv"), col_types = cols())
+as_terra <- read_csv(here("data/radiometer/as_terra.csv"), col_types = cols())
+as_planet <- read_csv(here("data/radiometer/as_planet.csv"), col_types = cols())
+```
+
+
+# tidy the cell count data
+
+```{r}
+cell_select <- cellcount %>% 
+  select(sample_id, frac_red, cell_cm2_per_l, cells_per_sq_m) %>% # keep cm^2/L for comparison w Ganey 2017
+  # convert units
+  mutate(bil_cells_per_sq_m = cells_per_sq_m/1e9, # convert to billion cells
+         cell_area_percent = frac_red * 100,
+         .keep = "unused")
+```
+
+
+
+# Compute RGND
+
+Red green normalized difference (RGND; referred to as NDI in Ganey 2017; SDI in DiMauro 2015)
+
+```{r}
+# a function to compute the normalized difference
+nd <- function(a,b){ (a-b)/(a+b) } 
+
+compute_rgnd <- function(data, green, red){
+  green <- enquo(green)
+  red <- enquo(red)
+  
+  data %>% 
+    mutate(rgnd = nd(!!red, !!green)) %>% 
+    select(scan_id, sample_id, rgnd)
+}
+
+# compute indices for convolved radiometer data 
+s2_rgnd <- as_s2 %>% 
+    compute_rgnd(green = b3, red = b4)
+l8_rgnd <- as_l8 %>% 
+    compute_rgnd( green = band_3, red = band_4)
+terra_rgnd <- as_terra %>% 
+    compute_rgnd(green = RSR_555, red = RSR_645)
+```
+
+## Cross-platform comparison
+
+```{r}
+# make a new tibble, with added column specifying the satellite platform name
+rgnd_comparison <- add_column(s2_rgnd, platform = "s2") %>% 
+  bind_rows(add_column(l8_rgnd, platform = "l8")) %>% 
+  bind_rows(add_column(terra_rgnd, platform = "terra")) %>% 
+  pivot_wider(names_from = platform, values_from = rgnd)
+  
+rgnd_comparison %>% 
+  select(where(is.numeric)) %>% 
+  ggpairs() +
+  labs(title = "Field radiometer snow algae sample scan RGND convolution comparison", x = "RGND satellite 1", y="RGND satellite 2")
+```
+
+```{r}
+rgnd_comparison_long <- rgnd_comparison %>% 
+  pivot_longer(s2:terra)
+
+rgnd_comparison_long %>% 
+  ggplot(aes(x = name, y = value)) +
+  geom_boxplot() +  
+  geom_jitter(width = 0.2, alpha = 0.2) +
+  labs(title= "Field radiometer snow algae sample scan RGND convolution comparison", x = "Satellite platform", y = "RGND")
+```
+ANOVA comparison of the above boxplot
+
+```{r}
+compare_mod <- lm(value ~ name, data = rgnd_comparison_long)
+summary(compare_mod)
+```
+No significant difference in RGND computed using different satellite RSRs. 
+
+I will now arbitrarily choose S2 RGND for the remaining analysis. 
+
+
+
+## QC for duplicate scans discrepancies
+
+This is similar to the duplicate scan comparison in convolve_sample_scans.R but with RGND instead of spectral albedo 
+
+
+Compare the duplicate scan values convolved to RGND
+```{r}
+s2_rgnd %>% 
+  ggplot(aes(y = rgnd, x= sample_id %>% fct_reorder(rgnd))) +
+  geom_point() +
+  labs(y = "RGND", x = "Sample ID") +
+  coord_flip()
+```
+
+Take mean value for each sample
+
+```{r}
+rgnd_final <- s2_rgnd %>% 
+  group_by(sample_id) %>% 
+  summarise(rgnd_mean = mean(rgnd), rgnd_sd = sd(rgnd))
+```
+
+
+# Plots
+
+
+```{r}
+# combine the data into a single data frame
+
+# first make a long version, keeping the SD for plotting with crossbars
+cell_long <- cell_select %>%  
+  pivot_longer(-sample_id) %>% 
+  group_by(sample_id, name) %>% 
+  summarize(mean = mean(value), sd = sd(value)) %>% 
+  ungroup()
+
+# save this for use in the albedo regression
+cell_long %>% write_csv(here("data/cellcount/cell_long.csv"))
+
+mass_long <- biomass %>% 
+  pivot_longer(-sample_id, values_to = "mean") %>% # common var name for joining
+  drop_na(mean) # missing IC for a few samples
+
+cell_mass_long <- cell_long %>% 
+  bind_rows(mass_long)
+
+
+joined_long <- rgnd_final %>% 
+  inner_join(cell_mass_long, by = "sample_id") %>% # use inner join to drop scans with no corresponding lab values
+  # shorten sample IDs for plotting
+  mutate(sample_id = sample_id %>% str_remove("21.0"),# Remove the 21. from the sample IDs
+       sample_id = sample_id %>% str_remove("21."))
+
+# also make a simpler wide version, with no SD 
+joined_wide <- joined_long %>% 
+  select(-sd, -rgnd_sd) %>% 
+  pivot_wider(names_from = "name", values_from = "mean") %>% 
+  rename(rgnd = rgnd_mean)
+```
+
+
+
+## pairs plot (all vars)
+
+```{r}
+pairs_plot <- joined_wide %>%
+  select(-sample_id) %>% 
+  ggpairs()
+# view this on full screen, hard to see within markdown doc
+```
+
+```{r}
+joined_wide %>% 
+  arrange(-mass_g_per_m2)
+```
+
+
+
+Several samples had outlier high TOC despite having relatively low algae, these samples contained visibly high mineral dust/pollen/dark stuff on surface, likely containing high organics that wouldn't increase the NDVI or RGND. Remove these 
+
+```{r}
+dirty_snow_samples <- c("bdw9", "whi10", "tri14")
+
+joined_wide_clean <- joined_wide %>% 
+  filter(!(sample_id %in% dirty_snow_samples))
+joined_long_clean <- joined_long %>% 
+  filter(!(sample_id %in% dirty_snow_samples))
+```
+
+
+
+
+There are two outliers in the pairs plot of TOC ~ frac_red, and TOC ~ cellcount plots.... what are they?
+
+## TOC vs algae
+
+```{r}
+joined_wide %>% 
+  ggplot(aes(y = toc_g_per_m2, x = cell_area_percent)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+
+joined_wide %>% 
+  ggplot(aes(y = toc_g_per_m2, x = bil_cells_per_sq_m)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+```
+
+tri3 and whi3 are the outliers
+Possible explanations: 
+- error in measurement, discrepancy between radiometer measurement point and the cookie (see photo).
+- cleaner, these had more algae and less biofilm. 
+
+## cell area vs count
+
+```{r}
+joined_wide%>% 
+  ggplot(aes(y = cell_area_percent, x = bil_cells_per_sq_m)) +
+  geom_point() +
+  geom_text(aes(label = sample_id), alpha = 0.4)
+```
+tri3 and whi3 have lower cell area than the others, the cells are just smaller. 
+
+
+## fig 2: RGND predicts Snow Algae cells, area, TOC, TN
+
+Use the long data for plotting with facets
+```{r, fig.width = 3, fig.height = 7}
+
+vars_to_plot <- c("bil_cells_per_sq_m", "cell_area_percent", "toc_g_per_m2", "tn_mg_per_m2")
+
+fig2_dat <- joined_long_clean %>%
+  filter(name %in% vars_to_plot) %>%
+  # order the factors, for plotting
+  mutate(name = name %>% fct_relevel(vars_to_plot)) # pull(resp_name) %>% levels() #check fct levels
+
+f2 <- fig2_dat %>% 
+  ggplot(aes(y = mean, x = rgnd_mean)) +
+  # plot the OLS regression lines...
+  # specify a 0 intercept for snow algae cell count and cell area
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + x,
+              data = fig2_dat %>% filter(name %in% c("cell_area_percent", "bil_cells_per_sq_m"))) + 
+  # allow y intercept to range freely for TOC and TN plots
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ x,
+              data = fig2_dat %>% filter(!(name %in% c("cell_area_percent", "bil_cells_per_sq_m")))) + 
+  geom_point(alpha = 0.4, size = 2) +
+  # the x val SD crossbar
+  geom_linerange(aes(ymin = mean - sd, 
+                      ymax = mean + sd),
+                      alpha = 0.4) +
+  # the y val SD crossbar
+  geom_linerange(aes(xmin = rgnd_mean - rgnd_sd,
+                   xmax = rgnd_mean + rgnd_sd),
+                alpha = 0.4) +
+  facet_grid(rows = vars(name), scales = "free") +
+  # annotate outliers
+  geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.03,
+            data = fig2_dat %>% filter(sample_id %in% c("whi3", "bdw4"))) +
+  theme_minimal() +
+  theme(axis.title.y = element_blank()) +
+  labs(x = "RGND") +
+  theme(panel.spacing = unit(2, "lines")) # increase spacing between panels
+f2
+ggsave(here("figs/f2.pdf"), height = 7, width = 3) # polish in inkscape
+```
+The final axis labels should be:
+Percent snow algae cell area
+Cell abundance (10^9 cells/m^2)
+Total organic carbon (g/m^2)
+Total nitrogen (mg/m^2)
+
+(add these in the final polish in Inkscape)
+
+
+
+# OLS regression
+
+lm models
+```{r}
+cell_mod <- lm(bil_cells_per_sq_m ~ 0 + rgnd, data = joined_wide_clean) # set intercept to 0 for simplicity
+frac_mod <- lm(cell_area_percent ~ 0 + rgnd, data = joined_wide_clean) # set intercept to 0 for simplicity
+toc_mod <- lm(toc_g_per_m2 ~ rgnd, data = joined_wide_clean)
+tn_mod <- lm(tn_mg_per_m2 ~ rgnd, data = joined_wide_clean)
+```
+
+## lm coefs
+```{r}
+coefs <- bind_rows(
+  tidy(cell_mod) %>% add_column(response = "cell abundance"),
+  tidy(frac_mod) %>% add_column(response = "cell area"),
+  tidy(toc_mod) %>% add_column(response = "toc"),
+  tidy(tn_mod) %>% add_column(response = "tn")) %>% 
+  relocate(response) %>% 
+  # compute the confints (2 standard errors)
+  mutate(plus_minus = 3*std.error,
+        lower_bound = estimate - 2*std.error,
+         upper_bound = estimate + 2*std.error)
+coefs
+```
+95% CI estimates: 
+
+cell abundance: 6.95 +/- 3.11 RGND
+
+cell area: 216 +/- 78 RGND
+
+TOC: 16 +/- 6.5 RGND
+
+TN: 365 +/-142 RGND
+
+
+
+
+## R squared
+```{r}
+summary(cell_mod)$r.squared
+summary(frac_mod)$r.squared
+
+summary(toc_mod)$r.squared
+summary(tn_mod)$r.squared
+```
+
+
+
+## Compare polynomial with single term models 
+
+
+```{r}
+
+cell_poly_mod <- lm(bil_cells_per_sq_m ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+frac_poly_mod <- lm(cell_area_percent ~ 0 + poly(rgnd, 2), data = joined_wide_clean)
+toc_poly_mod <- lm(toc_g_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+tn_poly_mod <- lm(tn_mg_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+
+# compare AIC, choose model for each variable that minimizes AIC
+AIC(frac_poly_mod, frac_mod, 
+    cell_poly_mod,cell_mod,
+    toc_poly_mod,toc_mod,
+    tn_poly_mod, tn_mod) %>% 
+  rownames_to_column("model") %>% 
+  mutate(quadratic = ifelse(model %>% str_detect("poly"), TRUE, FALSE),
+         response_variable = model %>% str_remove("_mod") %>% str_remove("_poly")) %>% 
+  select(-df, -model) %>% 
+  pivot_wider(names_from = response_variable, values_from = AIC)
+
+```
+
+AIC is minimized with the single term model in all cases
+
+
+
+## compare w Ganey et al 2017 "algae abundance model" regression
+
+```{r}
+joined_wide_clean %>% 
+  ggplot(aes(x = rgnd, y = cell_cm2_per_l)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, formula = y ~ 0 + x)
+```
+
+
+Ganey : A = 1,449 NDI
+
+
+```{r}
+ganey_frac_mod <- lm(cell_cm2_per_l ~ 0 + rgnd, data = joined_wide_clean)
+tidy(ganey_frac_mod)
+summary(ganey_frac_mod)$r.squared
+
+```
+```{r}
+1727/1449 # our est is +19% of ganey
+1449/1727 # ganey's estimate is 16% lower than ours
+```
+excluding two highest outliers  
+```{r}
+ganey_frac_mod2 <- lm(cell_cm2_per_l ~ 0 + rgnd, data = joined_wide_clean %>% 
+                       filter(cell_cm2_per_l<800))
+tidy(ganey_frac_mod2)
+summary(ganey_frac_mod2)$r.squared
+```
+
+<!-- # Bayesian regression -->
+
+
+<!-- Conjugate priors -->
+
+<!-- ```{r} -->
+<!-- var1 <- -->
+<!-- priors1 <- c(set_prior("normal(3, 0.632)", class = "b", coef = "rgnd")) -->
+
+<!-- cell_mod <- brm(bil_cells_per_sq_m ~ 0 + rgnd, data = joined_wide_clean, seed = 123, priors = priors1) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- priors2 <- c(set_prior("normal(3, 0.632)", class = "b", coef = "age")) -->
+
+<!-- frac_mod <- brm(cell_area_percent ~ 0 + rgnd, data = joined_wide_clean, seed = 123) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- priors3 <- c(set_prior("normal(3, 0.632)", class = "b", coef = "age"), -->
+<!--              set_prior("normal(0, 0.316)", class = "b", coef = "age2")) -->
+<!-- toc_mod <- brm(toc_g_per_m2 ~ rgnd, data = joined_wide_clean, seed = 123) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- priors4 <- c(set_prior("normal(3, 0.632)", class = "b", coef = "age"), -->
+<!--              set_prior("normal(0, 0.316)", class = "b", coef = "age2")) -->
+<!-- tn_mod <- brm(tn_mg_per_m2 ~ rgnd, data = joined_wide_clean, seed = 123) -->
+<!-- ``` -->
+
+
+
+

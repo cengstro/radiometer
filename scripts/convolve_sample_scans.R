@@ -100,13 +100,29 @@ splines %>%
   geom_line(aes(y = .fitted, group = scan_id), color = "red") 
 
 # plot all
-splines %>%
-  unnest(cols = c(aug)) %>%
-  ggplot(aes(x = x)) +
-  geom_line(aes(y = y, group = scan_id)) +
-  geom_line(aes(y = .fitted, group = scan_id), color = "red")
+spl_plt_dat <- splines %>%
+  unnest(cols = c(aug, data)) %>%
+  mutate(site = sample_id %>% str_sub(1,3),
+         no = sample_id %>% str_sub(7,8) %>% as.numeric()) %>% 
+  filter(!(sample_id %in% c("tri21.13"))) %>% 
+  group_by(sample_id, wvl, site, no) %>% 
+  summarise(tgt_ref_ratio = mean(tgt_ref_ratio), .fitted = mean(.fitted))
+
+spl_plt_lab <- spl_plt_dat %>% 
+  filter(wvl==350)
+
+spl_plt_dat %>% 
+  ggplot(aes(x = wvl)) +
+  geom_line(aes(y = tgt_ref_ratio, group = sample_id), size = 1, alpha = 1, color = "blue") +
+  geom_line(aes(y = .fitted, group = sample_id), alpha = 1, size = 0.5, color = "red") +
+  facet_grid(rows = vars(site)) +
+  theme_dark() +
+  labs(y = "Spectral albedo", x = "Wavelength (nm)") +
+  # annotate sample IDs on x axis
+  ggrepel::geom_text_repel(aes(x = 350, y = tgt_ref_ratio, label = no), data = spl_plt_lab, size = 3, nudge_x = -10)
 # the chlorophyll 680 feature closely matches the orginal, but we have successfully filtered out the high frequency noise (except for tri 7 and tri8)
 
+ggsave(here("figs/smooth.png"), height = 8, width = 7)
 
 # measure difference from smooth spline
 splines %>% 
@@ -122,7 +138,10 @@ rad_clean <- splines %>%
   unnest(cols = c(aug, data)) %>% 
   select(scan_id, sample_id, wvl, rad_ref, rad_target, .fitted) %>% 
   rename(smooth_ratio = .fitted) %>% 
-  filter(!(sample_id %in% c("tri21.13", "tri21.08", "tri21.07")))
+  filter(!(sample_id %in% c("tri21.13", "tri21.08", "tri21.07"))) %>% 
+  group_by(sample_id, wvl) %>% 
+  summarise(rad_ref = mean(rad_ref), rad_target = mean(rad_target), smooth_ratio = mean(smooth_ratio)) %>% 
+  ungroup()
 
 # use the raw ref/target values for broadband albedo colvolution,
 # use the smoothed ratio for band SR convolutions  
@@ -177,7 +196,7 @@ joined_w_cellct <- joined %>%
 
 p1 <- joined_w_cellct %>% 
   ggplot(aes(x = wvl, y = smooth_ratio, colour = frac_red_mean)) +
-  geom_line(aes(group = scan_id)) +
+  geom_line(aes(group = sample_id)) +
   scale_colour_gradient(low = "white", high = "red") +
   theme_dark() 
 p1
@@ -317,7 +336,7 @@ rad_as_s2_band %>%
 
 
   
-# convolute to Planet ---------------
+# convolve to Planet ---------------
 
 planet_rsr <- planet_rsr_raw %>% 
   mutate(wvl = `Wavelength [µm]` * 1000, .keep = "unused", .before = 1) %>% 
