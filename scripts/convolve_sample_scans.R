@@ -21,7 +21,7 @@ biomass <- read_csv(here("data/biomass/tidy_biomass.csv"))
 cellcount <- read_csv(here("data/cellcount/final_cell.csv"))
 
 # RSRs 
-s2_rsr_raw <- read_excel(here("data/satellite_rsr/S2-SRF_COPE-GSEG-EOPG-TN-15-0007_3.0.xlsx"), sheet = "Spectral Responses (S2A)")
+s2_rsr_raw <- read_excel(here("data/satellite_rsr/S2-SRF_COPE-GSEG-EOPG-TN-15-0007_3.0.xlsx"), sheet = "Spectral Responses (S2A)") # downloaded from https://sentinels.copernicus.eu/documents/247904/685211/S2-SRF_COPE-GSEG-EOPG-TN-15-0007_3.0.xlsx
 planet_rsr_raw <- read_csv(here("data/satellite_rsr/PlanetScope_RSR_SatID_0c_0d.csv"))
 l8_path <- here("data/satellite_rsr/L8_OLI_RSR.xlsx")
 l8_tabs <- excel_sheets(path = l8_path)[2:10]
@@ -56,11 +56,19 @@ rad %>%
 replicate_comparison <- rad %>% 
   filter(wvl<1340) %>% 
   group_by(sample_id, wvl) %>% 
-  summarise(percent_more = abs(tgt_ref_ratio[1] - tgt_ref_ratio[2])/min(tgt_ref_ratio)) %>% 
+  summarise(dif = abs(tgt_ref_ratio[1] - tgt_ref_ratio[2])) 
+
+# by wavelength
+replicate_comparison %>% 
+  filter(dif>0.055) %>% 
+  distinct(sample_id)
+
+# on average
+replicate_comparison %>% 
   group_by(sample_id) %>% 
-  summarise(mean_percent_more = mean(percent_more, na.rm = TRUE)) %>% 
-  arrange(-mean_percent_more)
-replicate_comparison
+  summarise(mean_dif = mean(dif, na.rm = TRUE)) %>% 
+  arrange(-mean_dif)
+
 # all scans within 10% except for tri21.13: scan 2 is 17 % higher than scan1 on average, remove this
 
 
@@ -103,10 +111,13 @@ splines %>%
 spl_plt_dat <- splines %>%
   unnest(cols = c(aug, data)) %>%
   mutate(site = sample_id %>% str_sub(1,3),
-         no = sample_id %>% str_sub(7,8) %>% as.numeric()) %>% 
+         no = sample_id %>% str_sub(7,8) %>% as.numeric(),
+         sid = sample_id %>% str_remove("21.")) %>% 
+  relocate(sid) %>% 
   filter(!(sample_id %in% c("tri21.13"))) %>% 
-  group_by(sample_id, wvl, site, no) %>% 
-  summarise(tgt_ref_ratio = mean(tgt_ref_ratio), .fitted = mean(.fitted))
+  group_by(sample_id, sid, wvl, site, no) %>% 
+  summarise(tgt_ref_ratio = mean(tgt_ref_ratio), .fitted = mean(.fitted)) %>% 
+  ungroup()
 
 spl_plt_lab <- spl_plt_dat %>% 
   filter(wvl==350)
@@ -119,10 +130,10 @@ spl_plt_dat %>%
   theme_dark() +
   labs(y = "Spectral albedo", x = "Wavelength (nm)") +
   # annotate sample IDs on x axis
-  ggrepel::geom_text_repel(aes(x = 350, y = tgt_ref_ratio, label = no), data = spl_plt_lab, size = 3, nudge_x = -10)
+  ggrepel::geom_text_repel(aes(x = 350, y = tgt_ref_ratio, label = sid), data = spl_plt_lab, size = 3, nudge_x = -10)
 # the chlorophyll 680 feature closely matches the orginal, but we have successfully filtered out the high frequency noise (except for tri 7 and tri8)
 
-ggsave(here("figs/smooth.png"), height = 8, width = 7)
+ggsave(here("figs/smooth.pdf"), height = 8, width = 7)
 
 # measure difference from smooth spline
 splines %>% 
@@ -244,7 +255,7 @@ p1 +
   scale_x_continuous(minor_breaks = seq(400 , 1300, 100), breaks = seq(400, 1300, 200)) +
   theme(legend.position = c(0.9, 0.8)) +
   labs(x = "Wavelength (nm)", y = "Spectral albedo", color = "Snow algae \ncell area \n% coverage", tag = "A")
-ggsave(here("figs/f1A.png"), height = 7, width = 9)
+ggsave(here("figs/f1A.pdf"), height = 7, width = 9)
 
 
 

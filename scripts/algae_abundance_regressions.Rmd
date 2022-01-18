@@ -11,6 +11,7 @@ library(janitor)
 library(GGally) 
 library(broom) 
 library(grid)
+library(ggpubr)
 # library(brms)
 ```
 
@@ -76,11 +77,32 @@ rgnd_comparison <- add_column(s2_rgnd, platform = "s2") %>%
   bind_rows(add_column(terra_rgnd, platform = "terra")) %>% 
   pivot_wider(names_from = platform, values_from = rgnd)
   
-rgnd_comparison %>% 
-  select(where(is.numeric)) %>% 
-  ggpairs() +
-  labs(title = "Field radiometer snow algae sample scan RGND convolution comparison", x = "RGND satellite 1", y="RGND satellite 2")
+
+xa <- rgnd_comparison %>% 
+  ggplot(aes(y =s2, x = terra)) +
+  geom_point(alpha = 0.7)+
+  theme_minimal() +
+  labs(y = "Sentinel-2 RGND", x = "MODIS  RGND", tag = "A")
+
+xb <- rgnd_comparison %>% 
+  ggplot(aes(y =s2, x = l8)) +
+  geom_point(alpha = 0.7)+
+  theme_minimal() +
+  labs(y = "Sentinel-2 RGND", x = "Landsat-8 RGND", tag = "B")
+
+xc <- rgnd_comparison %>% 
+  ggplot(aes(x =terra, y = l8)) +
+  geom_point(alpha = 0.7)+
+  theme_minimal() +
+  labs(x = "MODIS RGND", y = "Landsat-8 RGND", tag = "C")
+
+ggarrange(xa, xb, xc)
 ```
+```{r}
+ggsave(here("figs/rsr_rgnd_pairs.png"))
+```
+
+
 
 ```{r}
 rgnd_comparison_long <- rgnd_comparison %>% 
@@ -244,8 +266,10 @@ f2 <- fig2_dat %>%
   ggplot(aes(y = mean, x = rgnd_mean)) +
   # plot the OLS regression lines...
   # specify a 0 intercept for snow algae cell count and cell area
-  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + x,
-              data = fig2_dat %>% filter(name %in% c("cell_area_percent", "bil_cells_per_sq_m"))) + 
+  geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ 0 + I(x^2),
+              data = fig2_dat %>% filter(name %in% c("bil_cells_per_sq_m", "cell_area_percent"))) + 
+  # geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "green", formula = y ~ x,
+  #             data = fig2_dat %>% filter(name %in% c("cell_area_percent"))) +
   # allow y intercept to range freely for TOC and TN plots
   geom_smooth(method = "lm", alpha = 0.6, se = FALSE, color = "lightblue", formula = y ~ x,
               data = fig2_dat %>% filter(!(name %in% c("cell_area_percent", "bil_cells_per_sq_m")))) + 
@@ -267,7 +291,7 @@ f2 <- fig2_dat %>%
   labs(x = "RGND") +
   theme(panel.spacing = unit(2, "lines")) # increase spacing between panels
 f2
-ggsave(here("figs/f2.pdf"), height = 7, width = 3) # polish in inkscape
+ggsave(here("figs/f2.pdf"), width = 3, height = 7) # polish in inkscape
 ```
 The final axis labels should be:
 Percent snow algae cell area
@@ -283,8 +307,8 @@ Total nitrogen (mg/m^2)
 
 lm models
 ```{r}
-cell_mod <- lm(bil_cells_per_sq_m ~ 0 + rgnd, data = joined_wide_clean) # set intercept to 0 for simplicity
-frac_mod <- lm(cell_area_percent ~ 0 + rgnd, data = joined_wide_clean) # set intercept to 0 for simplicity
+cell_mod <- lm(bil_cells_per_sq_m ~ 0 + I(rgnd^2), data = joined_wide_clean) # set intercept to 0 for simplicity
+frac_mod <- lm(cell_area_percent ~ 0 + I(rgnd^2), data = joined_wide_clean) # set intercept to 0 for simplicity
 toc_mod <- lm(toc_g_per_m2 ~ rgnd, data = joined_wide_clean)
 tn_mod <- lm(tn_mg_per_m2 ~ rgnd, data = joined_wide_clean)
 ```
@@ -296,23 +320,18 @@ coefs <- bind_rows(
   tidy(frac_mod) %>% add_column(response = "cell area"),
   tidy(toc_mod) %>% add_column(response = "toc"),
   tidy(tn_mod) %>% add_column(response = "tn")) %>% 
-  relocate(response) %>% 
-  # compute the confints (2 standard errors)
-  mutate(plus_minus = 3*std.error,
-        lower_bound = estimate - 2*std.error,
-         upper_bound = estimate + 2*std.error)
+  relocate(response) 
 coefs
 ```
-95% CI estimates: 
 
-cell abundance: 6.95 +/- 3.11 RGND
 
-cell area: 216 +/- 78 RGND
+cell abundance= 22 +/- 3.5 RGND^2 (+/- SE)
+cell area= 694 +/- 85 RGND^2
+TOC= 16 +/- 2.2 RGND
+TN= 365 +/- 48 RGND
 
-TOC: 16 +/- 6.5 RGND
 
-TN: 365 +/-142 RGND
-
+Sanity 
 
 
 
@@ -332,10 +351,12 @@ summary(tn_mod)$r.squared
 
 ```{r}
 
-cell_poly_mod <- lm(bil_cells_per_sq_m ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
-frac_poly_mod <- lm(cell_area_percent ~ 0 + poly(rgnd, 2), data = joined_wide_clean)
+cell_poly_mod <- lm(bil_cells_per_sq_m ~ 0 + I(rgnd^2), data = joined_wide_clean %>% drop_na(rgnd))
+frac_poly_mod <- lm(cell_area_percent ~ 0 + I(rgnd^2), data = joined_wide_clean)
 toc_poly_mod <- lm(toc_g_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
 tn_poly_mod <- lm(tn_mg_per_m2 ~ 0 + poly(rgnd, 2), data = joined_wide_clean %>% drop_na(rgnd))
+
+
 
 # compare AIC, choose model for each variable that minimizes AIC
 AIC(frac_poly_mod, frac_mod, 
@@ -360,7 +381,10 @@ AIC is minimized with the single term model in all cases
 joined_wide_clean %>% 
   ggplot(aes(x = rgnd, y = cell_cm2_per_l)) +
   geom_point() +
-  geom_smooth(method = "lm", se = FALSE, formula = y ~ 0 + x)
+  geom_smooth(method = "lm", formula = y ~ 0 + x, color = "blue") +
+  geom_abline(0, slope = 1449, linetype = "dashed", color="red") +
+  theme_minimal() +
+  labs(x = "RGND", y = "Snow algae cell area (cm2/L)")
 ```
 
 

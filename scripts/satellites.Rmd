@@ -20,23 +20,23 @@ library(GGally)
 
 ```{r}
 # modis polygon
-ts_modis <- dir_ls(here("data/gee_ts/modis_grid_cells"), regexp = ".csv$") %>% 
+ts_modis <- dir_ls(here("data/google_earth_engine/modis_grid_cells"), regexp = ".csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 
 # bloom polygon
-ts_custom <- dir_ls(here("data/gee_ts/custom_polygon"), regexp = ".csv$") %>% 
+ts_custom <- dir_ls(here("data/google_earth_engine/custom_polygon"), regexp = ".csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 
 # glacier polygon
-ts_glims <- dir_ls(here("data/gee_ts/glimsGeom"), regexp = ".csv$") %>% 
+ts_glims <- dir_ls(here("data/google_earth_engine/glimsGeom"), regexp = ".csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 
 # histogram of RGND during peak bloom week
-hist <- dir_ls(here("data"), regexp = "*hist.csv$") %>% 
+hist <- dir_ls(here("data/google_earth_engine/hist/"), regexp = "*hist.csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 
 # wx
-wx <- dir_ls(here("data"), regexp = "*wx.csv$") %>% 
+wx <- dir_ls(here("data/google_earth_engine/wx"), regexp = "*wx.csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 ```
 
@@ -118,10 +118,9 @@ p1 <- plot_dat %>%
   ggplot(aes(x = date, y = rgnd, color = platform, shape = platform)) +
   facet_grid(rows = vars(site)) +
   geom_point(alpha =0.7) +
-  labs(x = "Date", y = "RGND", color = "Satellite") +
+  labs(x = "Date", y = "RGND") +
   theme_minimal() +
   geom_hline(yintercept = 0) +
-  scale_color_manual(values = gg_color_hue(3)) +
   theme(panel.spacing = unit(2, "lines")) 
 p1
 ```
@@ -160,12 +159,13 @@ s2_interp <- plot_dat %>%
 p1 +
   # geom_line(stat="smooth", method = "loess", data= curve_dat, alpha = 0.5, size = 1, color = "purple")
   geom_line(data= s2_interp, alpha = 0.5, size = 1, color = gg_color_hue(3)[1]) +
+  # re plot points, so the points are on top of the line
   geom_point(alpha = 0.7)
 
 ```
 
 ```{r}
-ggsave(here("figs/satellite_time_series.pdf"), height = 5, width = 7)
+# ggsave(here("figs/satellite_time_series.pdf"), height = 5, width = 7)
 ```
 
 
@@ -181,7 +181,8 @@ date_bins <- plot_dat %>%
   group_by(platform, site, date_bin) %>% 
   summarise(rgnd = mean(rgnd)) %>% 
   ungroup() %>% 
-  pivot_wider(names_from = "platform", values_from = "rgnd")
+  pivot_wider(names_from = "platform", values_from = "rgnd") %>% 
+  mutate(site = site %>% str_to_title() %>% fct_recode("Catamount"="Cat"))
 
 # check that cut_width works as expected
 date_bins %>% 
@@ -195,6 +196,46 @@ date_bins %>%
   select(where(is.numeric)) %>% 
   ggpairs() 
 ```
+
+```{r}
+ppa <- date_bins %>%
+  ggplot(aes(y = `Sentinel-2`, x = `MODIS/Terra`)) +
+  geom_point(aes(color = site)) +
+  lims(x = c(0, 0.04), y = c(0, 0.04)) +
+  geom_smooth(method = "lm", se=FALSE) +
+  theme_minimal() +
+  labs(y = "Sentinel-2 RGND", x = "MODIS/Terra RGND", tag = "A") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
+ppa  
+
+ppb <- date_bins %>%
+  ggplot(aes(y = `Sentinel-2`, x = `Landsat-8`)) +
+  geom_point(aes(color = site)) +
+  lims(x = c(0, 0.04), y = c(0, 0.04)) +
+  geom_smooth(method = "lm", se=FALSE) +
+  theme_minimal() +
+  labs(y = "Sentinel-2 RGND", x = "Landsat-8", tag = "B") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
+ppb
+
+ppc <- date_bins %>%
+  ggplot(aes(y = `Landsat-8`, x = `MODIS/Terra`)) +
+  geom_point(aes(color = site)) +
+  lims(x = c(0, 0.04), y = c(0, 0.04)) +
+  geom_smooth(method = "lm", se=FALSE) +
+  theme_minimal() +
+  labs(y = "Landsat-8 RGND", x = "MODIS/Terra RGND", tag = "C") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
+ppc
+
+legend <- cowplot::get_legend(ppa)
+ggarrange(ppa + theme(legend.position = "none"), ppb + theme(legend.position = "none"), ppc + theme(legend.position = "none"), legend)
+```
+```{r}
+# ggsave(here("figs/rgnd_compare.png"))
+```
+
+
 ## peak bloom boxplot
 
 
@@ -218,11 +259,11 @@ defining "peak week" as Jul 27 -Jul 30
 
 Apply regression estimates:
 
-cell abundance: 6.95 +/- 3.11 RGND
-cell area: 216 +/- 78 RGND
-TOC: 16 +/- 6.5 RGND
-TN: 365 +/-142 RGND
-delta_albedo = 0.9 +/- 0.34 RGND 
+cell abundance= 22 +/- 3.5 RGND^2 (+/- SE)
+cell area= 694 +/- 85 RGND^2
+TOC= 16 +/- 2.2 RGND
+TN= 365 +/- 48 RGND
+delta_albedo = -0.90 +/- 0.17 RGND
 
 ```{r}
 # from GEE
@@ -248,29 +289,29 @@ estimate_bloom_stats <- function(rgnd_df, polygon_area_df){
   rgnd_df %>%
     left_join(polygon_area_df) %>% 
     mutate(
-      cell_count = 6.95 * rgnd, # bil cells / m2
-      cell_count_ci = 3.11 * rgnd,
-      cell_area = 216 * rgnd, # percent cell area
-      cell_area_ci = 78 * rgnd,
+      cell_count = 22 * rgnd^2, # bil cells / m2
+      cell_count_se = 3.5 * rgnd^2,
+      cell_area = 694 * rgnd^2, # percent cell area
+      cell_area_se = 85 * rgnd^2,
       toc = 16 * rgnd, # g/m2
-      toc_ci = 6.5 * rgnd,
+      toc_se = 2.2 * rgnd,
       tn = 365 * rgnd, # mg/m2
-      tn_ci = 142 * rgnd,
+      tn_se = 48 * rgnd,
       delta_albedo = 0.9 * rgnd, # delta albedo
-      delta_albedo_ci = 0.34 * rgnd, 
+      delta_albedo_se = 0.17 * rgnd, 
       total_cells = cell_count * area_m2, # bil cells
-      total_cells_ci = cell_count_ci * area_m2, 
+      total_cells_se = cell_count_se * area_m2, 
       total_toc_kg = (toc * area_m2)/1000, # kg
-      total_toc_kg_ci = (toc_ci * area_m2)/1000, 
+      total_toc_kg_se = (toc_se * area_m2)/1000, 
       total_tn_kg = (tn * area_m2)/(1000*1000), # kg
-      total_tn_kg_ci = (tn_ci * area_m2)/(1000*1000),
+      total_tn_kg_se = (tn_se * area_m2)/(1000*1000),
     ) %>% 
     # reformat table
     pivot_longer(-site) %>% 
-    mutate(type = ifelse(name %>% str_detect("_ci"), "confint", "value"),
-           name = name %>% str_remove("_ci")) %>% 
+    mutate(type = ifelse(name %>% str_detect("_se"), "se", "value"),
+           name = name %>% str_remove("_se")) %>% 
     pivot_wider(names_from = c(site, type)) %>% 
-    relocate(name, vowell_value, vowell_confint) %>% 
+    relocate(name, vowell_value, vowell_se) %>% # put vowell before catamount, consistant w rest of manuscript
     mutate_if(is.numeric, format, digits=3, nsmall = 0) %>% 
     mutate(name = name %>% fct_recode(bil_cells_per_m2 = "cell_count",
                                       cell_area_percent_cov = "cell_area", 
@@ -284,9 +325,44 @@ bloom_polygon_stats <- ts_custom_wide %>%
   estimate_bloom_stats(polygon_area_df = bloom_polygon_area)
 
 
-bloom_polygon_stats %>% 
-  kbl() %>% 
+bloom_kable <- bloom_polygon_stats %>% 
+  mutate(name=name %>% fct_recode(
+    "RGND"="rgnd",
+    "Bloom area (m^2)" = "area_m2",
+    "Cell area density (10^9 cells/m^2)" ="bil_cells_per_m2",
+    "Cell area % cover" ="cell_area_percent_cov",
+    "TOC (g/m^2)" = "toc_g_m2",
+    "TN (mg/m^2)" = "tn_mg_m2",
+    "Delta albedo" = "delta_albedo",
+    "Total cells (10^9)"="total_cells_10^9",
+    "Total TOC (kg)" = "total_toc_kg",
+    "Total TN (kg)" = "total_tn_kg"
+  )) %>% 
+  kbl(caption = "A. Bloom polygon averages", col.names = c("", "Vowell", "Vowell SE", "Catamount", "Catamount SE")) %>% 
   kable_classic(full_width = F, html_font = "Cambria")
+bloom_kable
+```
+
+TOC/TN density
+TOC: .88 g/m2 = 880 +/- 121 kg/km2 on Vowell, and 625 +/- 86 on Catamount bloom polygon
+TN: 0.02 g/m2 = 20 +/- 2 kg/km2 on Vowell, and 14 +/- 2 on Catamount 
+
+net TOC/TN
+TOC: 1480 +/- 204 kg Vowell, 1200 +/- 165 Catamount
+TN: 34 +/-4 Vowell, 27 +/-4 Cat
+
+```{r}
+bloom_kable %>% 
+  save_kable(here("figs/bloom_poly_stats_table.pdf"))
+```
+```{bash}
+# the density parameter must come before the input file
+convert \
+  -density 300 \
+  ../figs/bloom_poly_stats_table.pdf \
+  -sharpen 0x1.0 \
+  -quality 100 \
+  ../figs/bloom_poly_stats_table.png
 ```
 
 ### compare w MODIS albedo
@@ -325,13 +401,39 @@ glacier_polygon_stats <- ts_custom_wide %>%
   estimate_bloom_stats(polygon_area_df = glacier_polygon_area)
 
 
-glacier_polygon_stats %>% 
-  kbl() %>% 
+glims_kable <- glacier_polygon_stats %>% mutate(name=name %>% fct_recode(
+    "RGND"="rgnd",
+    "Bloom area (m^2)" = "area_m2",
+    "Cell area density (10^9 cells/m^2)" ="bil_cells_per_m2",
+    "Cell area % cover" ="cell_area_percent_cov",
+    "TOC (g/m^2)" = "toc_g_m2",
+    "TN (mg/m^2)" = "tn_mg_m2",
+    "Delta albedo" = "delta_albedo",
+    "Total cells (10^9)"="total_cells_10^9",
+    "Total TOC (kg)" = "total_toc_kg",
+    "Total TN (kg)" = "total_tn_kg"
+  )) %>% 
+  kbl(caption = "B. Glacier polygon averages", col.names = c("", "Vowell", "Vowell SE", "Catamount", "Catamount SE")) %>% 
   kable_classic(full_width = F, html_font = "Cambria")
+glims_kable
 ```
 
+Total TOC: 
+Total TN: 121+/-16 kg Vowell, 83+/-11 Catamount
 
-
+```{r}
+glims_kable %>% 
+  save_kable(here("figs/glims_poly_stats_table.pdf"))
+```
+```{bash}
+# the density parameter must come before the input file
+convert \
+  -density 300 \
+  ../figs/glims_poly_stats_table.pdf \
+  -sharpen 0x1.0 \
+  -quality 100 \
+  ../figs/glims_poly_stats_table.png
+```
 
 ### compare with MODIS snow albedo
 
@@ -356,9 +458,9 @@ summer_rf <- function(srad_df, delta_albedo_df){
     select(date, srad) %>% 
     left_join(delta_albedo_df, by = "date") %>% 
     mutate(rf = srad * delta_albedo,
-           rf_ci = srad * delta_albedo_ci) %>% 
+           rf_se = srad * delta_albedo_se) %>% 
     group_by(site) %>% 
-    summarise(rf_wm2 = mean(rf), rf_ci = mean(rf_ci))
+    summarise(rf_wm2 = mean(rf), rf_se = mean(rf_se))
 }
 ```
 
@@ -368,7 +470,7 @@ Using S2 mean RGND within bloom polygon
 ```{r}
 s2_interp_d_albedo <- s2_interp %>% 
   mutate(delta_albedo = 0.9 * rgnd, 
-         delta_albedo_ci = 0.34 * rgnd) %>% 
+         delta_albedo_se = 0.17 * rgnd) %>% 
   select(-albedo)
 
 wx_clean %>% 
@@ -378,10 +480,28 @@ wx_clean %>%
 
 Mean July-August RF:
 
-vowell: 10.6 +/- 4 W/m2 
-cat: 7.4 +/- 2.8 W/m2
+vowell: 10.6 +/- 2 W/m2 
+cat: 7.4 +/- 1.4 W/m2
 
 
+Computing this another way, taking the averages first and then multiplying srad by delta albedo
+```{r}
+# mean summer incoming radiation
+mean_summer_srad <- wx_clean %>% 
+  filter(month(date) %in% c(7,8)) %>% 
+  group_by(site) %>% 
+  summarise(mean(srad))
+
+# mean summer d albedo
+s2_interp_d_albedo %>% 
+  group_by(site) %>% 
+  summarise(mean(delta_albedo), mean(delta_albedo_se)) %>% 
+  left_join(mean_summer_srad) %>% 
+  mutate(srf = `mean(delta_albedo)` * `mean(srad)`,
+         srf_se = `mean(delta_albedo_se)` * `mean(srad)`)
+
+
+```
 
 
 
@@ -389,7 +509,7 @@ cat: 7.4 +/- 2.8 W/m2
 # compare RGND time series with different polygons
 
 
-```{r}
+```{r, fig.height = 5, fig.width=8}
 plot_dat2 <- ts_custom_wide %>% add_column(polygon = "bloom") %>% 
   bind_rows(ts_modis_wide %>% add_column(polygon = "modis")) %>% 
   bind_rows(ts_glims_wide %>% add_column(polygon = "glacier")) %>% 
@@ -397,20 +517,27 @@ plot_dat2 <- ts_custom_wide %>% add_column(polygon = "bloom") %>%
   mutate(platform = platform %>% 
            fct_relevel(c("s2", "l8", "terra")) %>%# order factors
            fct_recode("Sentinel-2"="s2",
-                      "Landast-8"="l8",
+                      "Landsat-8"="l8",
                       "MODIS/Terra"="terra")) 
 
 
 plot_dat2 %>% 
-  ggplot(aes(x = date, y = rgnd, color = polygon, shape = polygon)) +
-  facet_grid(rows = vars(site %>% fct_relevel("vowell")), cols = vars(platform)) +
-  geom_point(alpha = 0.5) +
+  mutate(site = site %>% fct_recode("Catamount"="cat", "Vowell"="vowell")) %>% 
+  ggplot(aes(x = date, y = rgnd, color = polygon)) +
+  facet_grid(rows = vars(site %>% fct_relevel("Vowell")), cols = vars(platform)) +
+  geom_line(stat="smooth", method = "loess", se=FALSE, alpha = 0.7) +
+  geom_point(size = 2, alpha=0.8) +
   # geom_line(aes(group=date)) +
   labs(x = "Date", y = "RGND") +
   theme_minimal() +
-  geom_hline(yintercept = 0)
+  geom_hline(yintercept = 0) +
+  # scale_shape_manual(values=c(3, 4, 7)) +
+  scale_color_manual(values = c("#7fc97f", "#beaed4", "#fdc086"))
 ```
 
+```{r}
+# ggsave(here("figs/polygon_compare.png"), height=5, width=8)
+```
 
 
 
@@ -484,40 +611,49 @@ During our Catamount transect we observed small patches of concentrated red snow
 # weather/albedo metadata
 
 
-```{r}
+```{r, fig.height = 10, fig.width=8}
 my_wx <- ts_custom_wide %>% 
   filter(platform %in% c("terra", "terraSnow")) %>% 
   select(site, date, rgnd, albedo) %>% 
   pivot_longer(-site:-date, values_drop_na =TRUE) %>% 
   pivot_wider() %>% 
   full_join(wx_clean) %>% 
-  # mean of both glaciers
-  group_by(date) %>%
-  select(-site) %>%
-  summarise(across(everything(), list(mean = mean), .names = "{.col}")) %>% 
-  pivot_longer(-date) %>%
-  mutate(name = name %>% fct_relevel("rgnd", "albedo", "tmax", "tmin", "prcp", "srad"))
+  # # mean of both glaciers
+  # group_by(date) %>%
+  # select(-site) %>%
+  # summarise(across(everything(), list(mean = mean), .names = "{.col}")) %>% 
+  pivot_longer(-date:-site, values_drop_na=TRUE) %>%
+  mutate(name = name %>% fct_relevel("rgnd", "albedo", "tmax", "tmin", "prcp", "srad") %>% 
+           fct_recode("RGND"="rgnd", "MOD10A1 Albedo"="albedo", "Max. Temp C"="tmax", "Min. Temp C"="tmin", "Precip. (mm)" = "prcp", 
+                      "Solar radiation (w/m2)"="srad"),
+         site = site %>% fct_recode("Vowell"="vowell", "Catamount"="cat") %>% fct_relevel("Vowell")) %>% 
+  drop_na()
 
 
-my_wx %>% 
+wxplt <- my_wx %>% 
   ggplot(aes(x = date, y = value)) +
-  facet_grid(rows = vars(name), scales = "free") +
-  geom_point(alpha = 0.6, data = my_wx %>% filter(name %in% c("rgnd", "albedo"))) +
+  facet_grid(rows = vars(name), cols = vars(site), scales = "free") +
+  geom_point(alpha = 0.6, data = my_wx %>% filter(name %in% c("RGND", "MOD10A1 Albedo"))) +
   theme_minimal() +
   geom_smooth(color = "red", 
               data = my_wx %>% 
-                filter(name =="rgnd") %>% 
+                filter(name =="RGND") %>% 
                 # set Jul 1 to 0
                 bind_rows(tibble(date = ymd("2020-07-01", "2020-07-02", "2020-07-03", "2020-07-04", "2020-07-05"), 
-                                 name = "rgnd", value=0)) %>% 
-                mutate(name = name %>% fct_relevel("rgnd"))) +
-  geom_smooth(data = my_wx %>% filter(name =="albedo"), color = "black") +
-  geom_line(alpha = 0.5, data = my_wx %>% filter(!(name %in% c("rgnd", "albedo")))) +
+                                 name = "RGND", value=0)) %>% drop_na() %>% 
+                mutate(name = name %>% fct_relevel("RGND"))) +
+  geom_smooth(data = my_wx %>% filter(name =="MOD10A1 Albedo"), color = "black") +
+  geom_line(alpha = 0.5, data = my_wx %>% filter(!(name %in% c("RGND", "MOD10A1 Albedo")))) +
   # add horiz line to some facets
-  geom_hline(aes(yintercept = 0), data = my_wx %>% filter(!(name %in% c("albedo", "srad"))) ) 
+  geom_hline(aes(yintercept = 0), data = my_wx %>% filter(!(name %in% c("MOD10A1 Albedo", "Solar radiation (w/m2)"))) ) +
+  labs(y="",x="Date")
+wxplt
 ```
 
 
+```{r}
+# ggsave(here("figs/wx_plot.png"),height =9, width = 8 )
+```
 
 # Applying G-D melt model, algae melt = 0.13 sqrt(area in cm2/l)
 

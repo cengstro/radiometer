@@ -102,10 +102,25 @@ kk <- epi_select %>%
   mutate(datetime = datetime - hours(8)) %>% 
   select(sample_id, type, lat, lon, datetime) 
 
-kk %>% 
-  kbl(format = "latex", booktabs = TRUE) %>% 
-  kable_styling(latex_options = "striped")
+kk2 <- kk %>% 
+  kbl(caption = "A. Radiometer samples", col.names = c("Sample ID", "Snow Color", "Latitude", "Longitude", "Date/Time (PST)")) %>% 
+  kable_classic(full_width = F, html_font = "Cambria") 
+kk2
 
 ```
 
+
+```{r}
+kk2 %>% 
+  save_kable(here("figs/radiometer_sample_table.pdf"))
+```
+```{bash}
+# the density parameter must come before the input file
+convert \
+  -density 300 \
+  ../figs/cat_sample_table.pdf \
+  -sharpen 0x1.0 \
+  -quality 100 \
+  ../figs/cat_sample_table.png
+```
 

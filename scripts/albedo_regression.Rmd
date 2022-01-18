@@ -226,14 +226,14 @@ pc
 
 
 ## Combine panels (Fig 3)
-```{r}
+```{r, fig.width = 3, fig.height=9}
 legend <- cowplot::get_legend(pa)
 
 ggarrange(pa + theme(legend.position = "none"), 
           pb + theme(legend.position = "none"), 
           pc + theme(legend.position = "none"), 
           legend,
-          ncol = 2, nrow = 2)
+          ncol = 1)
 ```
 
 
@@ -258,12 +258,8 @@ mod_dat <- dat %>%
 albedo_algae_mod <- lm(mean_albedo ~ log(mean_cell_area_percent), data = mod_dat)
 tidy(albedo_algae_mod)
 ```
-Compute 95% CI
-```{r}
-1.96*0.032
-1.96*0.010578
-```
-albedo = (0.66 +/- 0.063)  - 0.08 +/- 0.0207 * log(Cell Area Percent Cover)
+
+albedo = (0.66 +/- 0.033)  - 0.078 +/- 0.011 * log(Cell Area Percent Cover)
 
 ```{r}
 summary(albedo_algae_mod)$r.squared # .80
@@ -279,13 +275,10 @@ summary(albedo_algae_mod)$r.squared # .80
 albedo_rgnd_mod <- lm(mean_albedo ~ mean_rgnd, data = mod_dat)
 tidy(albedo_rgnd_mod)
 ```
-95% CI
-```{r}
-1.96*0.03468
-1.96*0.1726
-```
-Excluding the intercept, the delta albedo attributable to algae is predicted by: 
-delta_albedo = 0.9 +/- 0.34 RGND 
+albedo = 0.61 - 0.90 +/- 0.17 RGND
+delta_albedo = -0.90 +/- 0.17 RGND
+
+(t(17) =-5.2, p=0.0001)
 
 ```{r}
 summary(albedo_rgnd_mod)$r.squared # 0.65
@@ -297,13 +290,8 @@ summary(albedo_rgnd_mod)$r.squared # 0.65
 irf_mod <- lm(irf ~ 0 + log(mean_cell_area_percent), data = irf_full %>% filter(type == "red"))
 irf_mod %>% tidy()
 ```
-95% CI
-```{r}
-1.96*3.35
-```
 
-
-IRF = 59 +/- 6.6 log(frac_red_percent)
+IRF = 64 +/- 3.4 log(frac_red_percent)
 
 ```{r}
 summary(irf_mod)$r.squared
@@ -354,18 +342,31 @@ dat %>%
 ## plot
 
 
-```{r}
+```{r, fig.width=7, fig.height=7}
+facet_names <- list(
+  'mean_vis_albedo'="Visible (350-700 nm)",
+  'mean_nir_albedo'="NIR (700-1300 nm)",
+  'mean_albedo'="Vis+NIR (350-1300 nm)"
+)
+facet_labeller <- function(variable,value){
+  return(facet_names[value])
+}
+
 dat %>% 
   # format for plotting
   select(type, mean_cell_area_percent, mean_albedo, mean_vis_albedo, mean_nir_albedo) %>% 
   pivot_longer(cols = c(mean_albedo, mean_vis_albedo, mean_nir_albedo)) %>% 
   ggplot(aes(y = value, x = type)) +
-  facet_grid(rows = vars(name)) +
+  facet_grid(rows = vars(name), labeller = facet_labeller) +
   geom_boxplot() +
   # geom_jitter(width = 0.2) +
   lims(y = c(0,1)) +
-  labs(y = "Broadband albedo (350 - 1340 nm)") +
-  theme_minimal()
+  labs(y = "Broadband albedo", y = "Snow type") +
+  theme_minimal() #+
+  # geom_point()
+```
+```{r}
+# ggsave(here("figs/bb_albedo_boxplot.png"), height = 8, width = 5)
 ```
 
 
