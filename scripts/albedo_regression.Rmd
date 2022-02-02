@@ -27,7 +27,7 @@ rgnd <- read_csv(here("data/radiometer/as_s2_indices.csv"), col_types = cols())
 
 # IRF
 scans <- read_csv(here("data/radiometer/sample_scans.csv"), col_types = cols())
-solar_rad <- read_excel(here("data/PVL_SpectrumCalculator2.xlsx"), sheet = 3)
+solar_rad <- read_excel(here("data/PVL_SpectrumCalculator_Whistler_2021-07-31_13:00:00.xlsx"), sheet = 3)
 ```
 
 # Compare duplicate albedo scans
