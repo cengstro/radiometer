@@ -11,7 +11,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-# Supplementary scripts for the manuscript "Seasonal dynamics and radiative forcing of red snow algal blooms in British Columbia, Canada" by Engstrom, Williamson, Gamon, Hik, and Quarmby, to be submitted 2022. 
+# Supplementary scripts for manuscript 'Seasonal dynamics and radiative forcing of red snow algal blooms in British Columbia, Canada'
 
 <!-- badges: start -->
 <!-- badges: end -->

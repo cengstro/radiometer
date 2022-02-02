@@ -1,7 +1,7 @@
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-# Supplementary scripts for Engstrom et al., 2022
+# Supplementary scripts for manuscript ‘Seasonal dynamics and radiative forcing of red snow algal blooms in British Columbia, Canada’
 
 <!-- badges: start -->
 <!-- badges: end -->
@@ -72,4 +72,4 @@ This repository contains all data and R code used for Engstrom et al.,
 
 ## To do following publication:
 
--   add DOI
+-   add DOI to readme
