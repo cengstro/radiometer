@@ -331,8 +331,15 @@ TOC= 16 +/- 2.2 RGND
 TN= 365 +/- 48 RGND
 
 
-Sanity 
+Compare without constraint of B0 (y intercept)
+```{r}
+cell_mod2 <- lm(bil_cells_per_sq_m ~ I(rgnd^2), data = joined_wide_clean)
+frac_mod2 <- lm(cell_area_percent ~ I(rgnd^2), data = joined_wide_clean) 
+summary(cell_mod2)
+summary(frac_mod2)
+```
 
+Estimated y intercept within one standard error of zero
 
 
 ## R squared

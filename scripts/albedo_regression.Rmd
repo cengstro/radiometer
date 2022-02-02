@@ -338,6 +338,11 @@ dat %>%
   summarise_all(mean)
 ```
 
+```{r}
+dat %>% 
+  group_by(type) %>% 
+  summarise(min = min(mean_vis_albedo))
+```
 
 ## plot
 

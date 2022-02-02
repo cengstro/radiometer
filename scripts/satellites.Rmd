@@ -41,6 +41,8 @@ wx <- dir_ls(here("data/google_earth_engine/wx"), regexp = "*wx.csv$") %>%
 ```
 
 
+
+
 # tidy
 
 ```{r}
@@ -86,8 +88,6 @@ wx_clean <- wx %>%
   pivot_wider()
   
 ```
-
-
 
 
 
@@ -545,6 +545,13 @@ plot_dat2 %>%
 
 
 # RGND histogram (s2 density plot)
+
+```{r}
+hist_clean %>% 
+  group_by(site) %>% 
+  summarise(max(band_value))
+```
+
 ```{r}
 grid_cell_count <- hist_clean %>% 
   group_by(site) %>% 
@@ -606,6 +613,19 @@ raw_vals_tbl %>%
 
 
 During our Catamount transect we observed small patches of concentrated red snow ~10-100 cm wide interspersed on white snow (Supp), but this patchiness was less apparent in Sentinel-2 images due to 10 m spatial resolution
+
+
+```{r}
+raw_vals_tbl %>% 
+  ggplot(aes(rgnd)) +
+  geom_histogram(binwidth = 0.008)+
+  facet_grid(rows = vars(site %>% 
+                           fct_relevel("vowell") %>% 
+                           fct_recode("Vowell"="vowell", "Catamount"="cat")), 
+             scales = "free") +
+  labs(x = "Count", y = "RGND") +
+  theme_minimal()
+```
 
 
 # weather/albedo metadata
