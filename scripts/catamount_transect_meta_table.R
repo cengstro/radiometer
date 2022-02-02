@@ -4,7 +4,7 @@ library(here)
 library(listviewer)
 library(lubridate)
 
-path <- here("data/catamount_transect_wpts.geojson") # downloaded from gaia
+path <- here("data/field_sample_meta/catamount_transect_wpts.geojson") # downloaded from gaia
 j <- read_json(path)
 
 # check out list structure
