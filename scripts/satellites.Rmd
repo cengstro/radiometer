@@ -16,7 +16,11 @@ library(splines)
 library(zoo)
 library(kableExtra)
 library(GGally)
+library(ggpubr)
 ```
+
+
+Not the most elegant solution to download each time series into a seperate csv, but working with what I've got. 
 
 ```{r}
 # modis polygon
@@ -25,6 +29,10 @@ ts_modis <- dir_ls(here("data/google_earth_engine/modis_grid_cells"), regexp = "
 
 # bloom polygon
 ts_custom <- dir_ls(here("data/google_earth_engine/custom_polygon"), regexp = ".csv$") %>% 
+  map_df(read_csv, id = "filename", col_types = cols())
+
+# bloom polygon pix count
+ts_custom_count <- dir_ls(here("data/google_earth_engine/custom_polygon/count"), regexp = "count.csv$") %>% 
   map_df(read_csv, id = "filename", col_types = cols())
 
 # glacier polygon
@@ -40,7 +48,13 @@ wx <- dir_ls(here("data/google_earth_engine/wx"), regexp = "*wx.csv$") %>%
   map_df(read_csv, id = "filename", col_types = cols())
 ```
 
+Coefs for biomass and albedo regression models
+```{r}
+biomass_coefs <- read_csv(here("data/abundance_coefs.csv"))
+albedo_coefs <- read_csv(here("data/albedo_coefs.csv")) %>% 
+  add_column("response"= "albedo") # add column to match biomass_coefs
 
+```
 
 
 # tidy
@@ -50,7 +64,7 @@ wx <- dir_ls(here("data/google_earth_engine/wx"), regexp = "*wx.csv$") %>%
 my_tidy <- function(df){
   df %>% 
     clean_names() %>% 
-    mutate(site = filename %>% basename() %>% str_remove(".csv") %>% str_split_n("_", 1),
+    mutate(site = filename %>% basename() %>% str_remove(".csv") %>% str_split_i("_",1),
            date = mdy(system_time_start))
 }
 
@@ -58,7 +72,7 @@ my_tidy <- function(df){
 ts_tidy <- function(df){
   df %>% 
      mutate(platform = basename(filename) %>% 
-              str_split_n("_", 2) %>% 
+              str_split_i("_", 2) %>% 
               str_remove(".csv"),
          rgnd = if_else(is.na(rgnd), rgnd_cloudmasked, rgnd)) %>% 
   select(platform, site, date, rgnd, albedo)
@@ -69,9 +83,20 @@ ts_modis_wide <- ts_modis %>%
   my_tidy() %>% 
   ts_tidy()
 
-ts_custom_wide <- ts_custom %>% 
+ts_custom_wide_unfilt <- ts_custom %>% 
   my_tidy() %>% 
   ts_tidy()
+
+ts_custom_count_wide <- ts_custom_count %>% 
+  my_tidy() %>% 
+  mutate(platform = basename(filename) %>% 
+              str_split_i("_", 2) %>% 
+              str_remove(".csv"), 
+         date = mdy(system_time_start),
+         .keep = "unused") %>% 
+  rename(count  = rgnd_cloudmasked) %>% 
+  select(platform, site, date, count)
+  
 
 ts_glims_wide <- ts_glims %>% 
   my_tidy() %>% 
@@ -79,7 +104,7 @@ ts_glims_wide <- ts_glims %>%
 
 hist_clean <- hist %>% 
   clean_names() %>% 
-  mutate(site = basename(filename) %>% str_split_n("_", 1), .keep = "unused")
+  mutate(site = basename(filename) %>% str_split_i("_", 1), .keep = "unused")
 
 wx_clean <- wx %>% 
   my_tidy() %>% 
@@ -89,6 +114,77 @@ wx_clean <- wx %>%
   
 ```
 
+# n pix per image
+
+```{r}
+ts_custom_wide_unfilt %>% 
+  inner_join(ts_custom_count_wide) %>% 
+  ggplot(aes(count)) +
+  geom_histogram() +
+  facet_wrap(vars(platform), scales = "free")
+```
+
+```{r}
+ppdat <- ts_custom_wide_unfilt %>% 
+  inner_join(ts_custom_count_wide) %>% 
+  mutate(platform = platform %>% fct_recode("MODIS/Aqua"="aqua","Sentinel-2"="s2", "Landsat-8"="l8", "MODIS/Terra"="terra") %>% fct_relevel("Sentinel-2", "Landsat-8", "MODIS/Terra"),
+         site = site %>% fct_relevel("vowell") %>% fct_recode("Catamount"="cat", "Vowell"="vowell"))
+
+ppdat %>% 
+  ggplot(aes(y = count, x = date, color = site)) +
+  geom_point(alpha = 0.4) +
+  geom_line()+
+  facet_wrap(vars(platform), scales = "free_y") +
+  scale_colour_brewer(palette = "Dark2")+
+  labs(y = "Valid pixel count", x = "Date") +
+  geom_hline(aes(yintercept = 3), data = ppdat %>% filter(platform %>% str_detect("MODIS"))) +
+  geom_hline(aes(yintercept = 15000), data = ppdat %>% filter(platform =="Sentinel-2")) +
+  geom_hline(aes(yintercept = 800), data = ppdat %>% filter(platform =="Landsat-8")) 
+```
+
+
+```{r}
+count(ts_custom_wide_unfilt, platform)
+
+modis_thresh <- 3
+s2_thresh <- 15000
+l8_thresh <- 800
+
+ts_custom_wide <-
+  ts_custom_wide_unfilt %>% 
+  left_join(ts_custom_count_wide) %>% 
+  left_join(tribble(
+    ~platform, ~thresh,
+    "l8",l8_thresh,
+    "s2",s2_thresh,
+    "terra",modis_thresh,
+    "aqua", modis_thresh
+  )) %>% #count(platform) # check before
+  # hack to filter by thresh without discarding the time series that don't have count/thresh data
+  filter(if_else(!is.na(count), count>=thresh, TRUE)) #%>% count(platform) # check after, only should remove S2/L8/Terra
+nrow(ts_custom_wide)
+count(ts_custom_wide, platform)
+```
+
+
+
+# n obs per platform
+
+```{r}
+ts_custom_wide %>% 
+  group_by(site, platform) %>% 
+  summarise(n_images = n()) %>% 
+  ungroup() %>% 
+  filter(platform!="terraSnow", platform!="aquaSnow") %>% 
+  mutate(platform = platform %>% fct_recode("Landsat-8"="l8",
+                                            "Sentinel-2"="s2",
+                                            "MODIS/Terra"="terra",
+                                            "MODIS/Aqua"="aqua")) %>% 
+  pivot_wider(names_from = site, values_from = n_images) %>% 
+  kbl(caption = "Number of cloud-free satellite images per site used in analysis", col.names = c("Platform", "Catamount", "Vowell")) %>% 
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
 
 
 # fig6 plot
@@ -96,18 +192,25 @@ wx_clean <- wx %>%
 
 ```{r}
 # make pretty for plotting
-plot_dat <- ts_custom_wide %>% 
-  filter(platform %in% c("s2", "l8", "terra"),
-         # remove sept 8 for catamount
-         !(platform=="s2" & date==ymd("2020-09-08"))
+plot_dat_4 <- ts_custom_wide %>% 
+  filter(platform %in% c("s2", "l8", "terra", "aqua"),
+         # remove sept 8 for catamount, looks like snow buried the algae on this date. Our index not calibrated for lightly buried snow algae
+         !(platform=="s2" & site=="cat" & date==ymd("2020-09-08")), 
+         # full polygon was set as "not snow" and therefore set RGND=0
+         !(platform=="aqua" & site == "vowell" & date==ymd("2020-07-22")), 
+         # all but one pixels set as not snow, only 1 valid RGND pixel, 
          ) %>% 
   mutate(platform = platform %>% 
            fct_recode("Sentinel-2"="s2",
                       "Landsat-8"="l8",
-                      "MODIS/Terra"="terra") %>% 
-           fct_relevel(c("Sentinel-2", "Landsat-8")),
-         site = site %>% fct_relevel("vowell")) 
-plot_dat$platform %>% levels()
+                      "MODIS/Terra"="terra",
+                      "MODIS/Aqua"="aqua") %>% 
+           fct_relevel(c("Sentinel-2", "Landsat-8", "MODIS/Terra")),
+         site = site %>% fct_relevel("vowell")) %>% 
+  mutate(site = fct_recode(site, "Vowell"="vowell","Catamount"="cat")) %>% 
+  dplyr::rename(Platform = platform)
+plot_dat_4$Platform %>% levels()
+plot_dat <- plot_dat_4 %>% filter(Platform!="MODIS/Aqua")
 
 gg_color_hue <- function(n) {
   hues = seq(15, 375, length = n + 1)
@@ -115,7 +218,7 @@ gg_color_hue <- function(n) {
 }
 
 p1 <- plot_dat %>% 
-  ggplot(aes(x = date, y = rgnd, color = platform, shape = platform)) +
+  ggplot(aes(x = date, y = rgnd, color = Platform, shape = Platform)) +
   facet_grid(rows = vars(site)) +
   geom_point(alpha =0.7) +
   labs(x = "Date", y = "RGND") +
@@ -130,16 +233,17 @@ p1
 
 ```{r}
 s2_interp <- plot_dat %>% 
-  filter(platform=="Sentinel-2", 
+  filter(Platform=="Sentinel-2", 
          # just July-Aug data
-         month(date) %in% c(7,8)) %>% 
+         date >= "2020-07-01",
+         date <= "2020-09-12") %>% 
   # set 0 on Jul 1 and Sept 1
   bind_rows(tribble(
     ~site, ~date, ~rgnd,
-    "cat", ymd("2020-07-01"), 0,
-    "cat", ymd("2020-09-01"), 0,
-    "vowell", ymd("2020-07-01"), 0,
-    "vowell", ymd("2020-09-01"), 0
+    "Catamount", ymd("2020-07-05"), 0,
+    "Catamount", ymd("2020-09-01"), 0,
+    "Vowell", ymd("2020-07-05"), 0,
+    "Vowell", ymd("2020-09-01"), 0
   )) %>% 
   # convert to tsibble to use handy fill_gaps()
   as_tsibble(key = site) %>%
@@ -149,8 +253,8 @@ s2_interp <- plot_dat %>%
   mutate(rgnd = zoo::na.approx(rgnd)) %>% 
   as_tibble() %>% 
   # add stuff back in for plotting
-  mutate(platform="Sentinel-2",
-         site = site %>% fct_relevel("vowell"))
+  mutate(Platform="Sentinel-2",
+         site = site %>% fct_relevel("Vowell"))
 ```
 
 ## export final plot
@@ -165,7 +269,7 @@ p1 +
 ```
 
 ```{r}
-# ggsave(here("figs/satellite_time_series.pdf"), height = 5, width = 7)
+ggsave(here("figs/figs_v2/7_rgnd_ts/satellite_time_series.pdf"), height = 5, width = 7)
 ```
 
 
@@ -175,14 +279,13 @@ p1 +
 
 ## pairs plot
 ```{r}
-date_bins <- plot_dat %>% 
+date_bins <- plot_dat_4 %>% 
   # bin time into discrete 4 day intervals
   mutate(date_bin = date %>% yday() %>% cut_width(width=5)) %>% 
-  group_by(platform, site, date_bin) %>% 
+  group_by(Platform, site, date_bin) %>% 
   summarise(rgnd = mean(rgnd)) %>% 
   ungroup() %>% 
-  pivot_wider(names_from = "platform", values_from = "rgnd") %>% 
-  mutate(site = site %>% str_to_title() %>% fct_recode("Catamount"="Cat"))
+  pivot_wider(names_from = "Platform", values_from = "rgnd")
 
 # check that cut_width works as expected
 date_bins %>% 
@@ -192,44 +295,74 @@ date_bins %>%
 
 Comparison of mean values for each 5 day time interval
 ```{r}
+my_fn <- function(data, mapping, ...){
+  ggplot(data = data, mapping = mapping) + 
+    geom_point(aes(color = site)) + 
+    geom_line(stat="smooth", method="lm", ...) +
+    scale_x_continuous(limits = c(0,0.04))+
+    scale_y_continuous(limits = c(0,0.04))+
+    scale_colour_brewer(palette = "Dark2")+
+    geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "grey50") 
+}
+
 date_bins %>%
-  select(where(is.numeric)) %>% 
-  ggpairs() 
+  ggpairs(columns = 3:6,
+          lower = list(continuous = my_fn))
 ```
 
 ```{r}
-ppa <- date_bins %>%
-  ggplot(aes(y = `Sentinel-2`, x = `MODIS/Terra`)) +
-  geom_point(aes(color = site)) +
-  lims(x = c(0, 0.04), y = c(0, 0.04)) +
-  geom_smooth(method = "lm", se=FALSE) +
-  theme_minimal() +
-  labs(y = "Sentinel-2 RGND", x = "MODIS/Terra RGND", tag = "A") +
-  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
-ppa  
+mod_s2_ratio <- date_bins %>% 
+  clean_names() %>% 
+  rowwise() %>% # a special form of grouping
+  mutate(mean_modis = mean(c(modis_terra, modis_aqua), na.rm=T),
+         mod_s2_ratio = mean_modis/sentinel_2) %>% 
+  ungroup()
+mod_s2_ratio
 
-ppb <- date_bins %>%
-  ggplot(aes(y = `Sentinel-2`, x = `Landsat-8`)) +
-  geom_point(aes(color = site)) +
-  lims(x = c(0, 0.04), y = c(0, 0.04)) +
-  geom_smooth(method = "lm", se=FALSE) +
-  theme_minimal() +
-  labs(y = "Sentinel-2 RGND", x = "Landsat-8", tag = "B") +
-  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
-ppb
+mod_s2_ratio %>% 
+  filter(!(is.na(mod_s2_ratio)), !(is.infinite(mod_s2_ratio))) %>% 
+  summarise(mean(mod_s2_ratio), sd(mod_s2_ratio))
+  
+```
 
-ppc <- date_bins %>%
-  ggplot(aes(y = `Landsat-8`, x = `MODIS/Terra`)) +
-  geom_point(aes(color = site)) +
-  lims(x = c(0, 0.04), y = c(0, 0.04)) +
-  geom_smooth(method = "lm", se=FALSE) +
-  theme_minimal() +
-  labs(y = "Landsat-8 RGND", x = "MODIS/Terra RGND", tag = "C") +
-  geom_abline(slope = 1, intercept = 0, color = "red", linetype="dashed")
-ppc
 
-legend <- cowplot::get_legend(ppa)
-ggarrange(ppa + theme(legend.position = "none"), ppb + theme(legend.position = "none"), ppc + theme(legend.position = "none"), legend)
+
+```{r}
+# ppa <- date_bins %>%
+#   ggplot(aes(y = `Sentinel-2`, x = `MODIS/Terra`)) +
+#   geom_point(aes(color = site), size = 2.5) +
+#   lims(x = c(0, 0.04), y = c(0, 0.04)) +
+#   geom_smooth(method = "lm", se=FALSE) +
+#   theme_minimal() +
+#   labs(y = "Sentinel-2 RGND", x = "MODIS/Terra RGND", tag = "A") +
+#   geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "grey50") +
+#   scale_colour_brewer(palette = "Dark2")
+# ppa  
+# 
+# ppb <- date_bins %>%
+#   ggplot(aes(y = `Sentinel-2`, x = `Landsat-8`)) +
+#   geom_point(aes(color = site), size = 2.5) +
+#   lims(x = c(0, 0.04), y = c(0, 0.04)) +
+#   geom_smooth(method = "lm", se=FALSE) +
+#   theme_minimal() +
+#   labs(y = "Sentinel-2 RGND", x = "Landsat-8", tag = "B") +
+#   geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "grey50") +
+#   scale_colour_brewer(palette = "Dark2")
+# ppb
+# 
+# ppc <- date_bins %>%
+#   ggplot(aes(y = `Landsat-8`, x = `MODIS/Terra`)) +
+#   geom_point(aes(color = site), size = 2.5) +
+#   lims(x = c(0, 0.04), y = c(0, 0.04)) +
+#   geom_smooth(method = "lm", se=FALSE) +
+#   theme_minimal() +
+#   labs(y = "Landsat-8 RGND", x = "MODIS/Terra RGND", tag = "C") +
+#   geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "grey50") +
+#   scale_colour_brewer(palette = "Dark2")
+# ppc
+# 
+# legend <- cowplot::get_legend(ppa)
+# ggarrange(ppa + theme(legend.position = "none"), ppb + theme(legend.position = "none"), ppc + theme(legend.position = "none"), legend)
 ```
 ```{r}
 # ggsave(here("figs/rgnd_compare.png"))
@@ -246,7 +379,7 @@ peak_yday <- yday(ymd('2020-07-28'))
 
 plot_dat %>% 
   filter(date>ymd("2020-07-26"), date <= ymd("2020-07-30")) %>% 
-  ggplot(aes(x = platform, y = rgnd)) +
+  ggplot(aes(x = Platform, y = rgnd)) +
   geom_boxplot() +
   facet_wrap(vars(site))
 ```
@@ -259,11 +392,6 @@ defining "peak week" as Jul 27 -Jul 30
 
 Apply regression estimates:
 
-cell abundance= 22 +/- 3.5 RGND^2 (+/- SE)
-cell area= 694 +/- 85 RGND^2
-TOC= 16 +/- 2.2 RGND
-TN= 365 +/- 48 RGND
-delta_albedo = -0.90 +/- 0.17 RGND
 
 ```{r}
 # from GEE
@@ -282,23 +410,32 @@ get_max_s2_rgnd <- function(df){
   group_by(site) %>% 
   summarise(rgnd = max(rgnd, na.rm = TRUE))
 }
-# ts_custom_wide %>% get_max_s2_rgnd()
+ts_custom_wide %>% 
+  filter(platform == "s2") %>% 
+  arrange(-rgnd)
 
+# helper function to extract estimates
+get_coef <- function(coef_tbl, rr, col){
+  coef_tbl %>% 
+    filter(term != "(Intercept)",
+           response == rr) %>%
+    pull({{col}})
+}
 
 estimate_bloom_stats <- function(rgnd_df, polygon_area_df){
   rgnd_df %>%
     left_join(polygon_area_df) %>% 
     mutate(
-      cell_count = 22 * rgnd^2, # bil cells / m2
-      cell_count_se = 3.5 * rgnd^2,
-      cell_area = 694 * rgnd^2, # percent cell area
-      cell_area_se = 85 * rgnd^2,
-      toc = 16 * rgnd, # g/m2
-      toc_se = 2.2 * rgnd,
-      tn = 365 * rgnd, # mg/m2
-      tn_se = 48 * rgnd,
-      delta_albedo = 0.9 * rgnd, # delta albedo
-      delta_albedo_se = 0.17 * rgnd, 
+      cell_count = get_coef(biomass_coefs, "cell abundance", estimate) * rgnd^2,
+      cell_count_se = get_coef(biomass_coefs, "cell abundance", std.error) * rgnd^2,
+      cell_area = get_coef(biomass_coefs, "cell area", estimate) * rgnd^2, 
+      cell_area_se = get_coef(biomass_coefs, "cell area", std.error) * rgnd^2,
+      toc = get_coef(biomass_coefs, "toc", estimate) * rgnd, # g/m2
+      toc_se = get_coef(biomass_coefs, "toc", std.error) * rgnd,
+      tn = get_coef(biomass_coefs, "tn", estimate) * rgnd, # mg/m2
+      tn_se = get_coef(biomass_coefs, "tn", std.error) * rgnd,
+      delta_albedo = get_coef(albedo_coefs, "albedo", estimate) * rgnd, # delta albedo
+      delta_albedo_se = get_coef(albedo_coefs, "albedo", std.error) * rgnd, 
       total_cells = cell_count * area_m2, # bil cells
       total_cells_se = cell_count_se * area_m2, 
       total_toc_kg = (toc * area_m2)/1000, # kg
@@ -343,13 +480,19 @@ bloom_kable <- bloom_polygon_stats %>%
 bloom_kable
 ```
 
-TOC/TN density
-TOC: .88 g/m2 = 880 +/- 121 kg/km2 on Vowell, and 625 +/- 86 on Catamount bloom polygon
-TN: 0.02 g/m2 = 20 +/- 2 kg/km2 on Vowell, and 14 +/- 2 on Catamount 
+Compute mean values
 
-net TOC/TN
-TOC: 1480 +/- 204 kg Vowell, 1200 +/- 165 Catamount
-TN: 34 +/-4 Vowell, 27 +/-4 Cat
+```{r}
+bloom_polygon_stats %>% 
+  mutate(across(vowell_value:cat_se, as.numeric)) %>% 
+  pivot_longer(-name, names_to = "s", values_drop_na = TRUE) %>% 
+  separate(s, into = c("site", "stat")) %>% 
+  group_by(name, stat) %>% 
+  summarise(mean = mean(value)) %>% 
+  pivot_wider(names_from= "stat", values_from = "mean")
+
+```
+
 
 ```{r}
 bloom_kable %>% 
@@ -377,13 +520,40 @@ ts_custom_wide %>%
   geom_smooth(se = FALSE) +
   ggtitle("MODIS snow albedo over bloom polygon")
 ```
-Albedo decline in July of 
-vowell: 0.5 - 0.35 ~= 0.15
-catamount: 0.55 - 0.45 ~= 0.1
+Extract LOESS estimates
+```{r}
+vowell_dat <- ts_custom_wide %>% filter(platform =="terraSnow", site=="vowell")
+cat_dat <- ts_custom_wide %>% filter(platform =="terraSnow", site=="cat")
 
-Our regression predicts a decline of:
-vowell: 0.05
-catamount: 0.035
+dates_in_summer <- ts_custom_wide %>% distinct(date)
+ydays_in_summer <- dates_in_summer %>% mutate(date = yday(date)) %>% pull()
+
+vowell_mod <- loess(albedo ~ yday(date), data = vowell_dat)
+cat_mod <- loess(albedo ~ yday(date), data = cat_dat)
+
+vowell_aug <- vowell_mod %>% augment(vowell_dat)
+cat_aug <- cat_mod %>% augment(cat_dat)
+
+cat_aug %>% 
+  ggplot(aes(x = date)) +
+  geom_line(aes(y=.fitted)) +
+  geom_point(aes(y = albedo))
+```
+```{r}
+vowell_grid <- yday(ymd("2020-07-05")):yday(ymd("2020-07-18"))
+cat_grid <- yday(ymd("2020-07-05")):yday(ymd("2020-07-30"))
+
+vowell_pred <- vowell_mod %>% predict(vowell_grid)
+cat_pred <- cat_mod %>% predict(cat_grid)  
+
+vowell_diff <- vowell_pred[1] - vowell_pred[vowell_pred==min(vowell_pred)]
+cat_diff <- cat_pred[1] - cat_pred[cat_pred==min(cat_pred)]
+vowell_diff
+cat_diff
+
+```
+
+
 
 
 ## glacier polygon
@@ -396,14 +566,14 @@ glacier_polygon_area <- tribble(
   "cat", 5.84705e6
 )
 
-glacier_polygon_stats <- ts_custom_wide %>% 
+glacier_polygon_stats <- ts_glims_wide %>% 
   get_max_s2_rgnd() %>% 
   estimate_bloom_stats(polygon_area_df = glacier_polygon_area)
 
 
 glims_kable <- glacier_polygon_stats %>% mutate(name=name %>% fct_recode(
     "RGND"="rgnd",
-    "Bloom area (m^2)" = "area_m2",
+    "Glacier area (m^2)" = "area_m2",
     "Cell area density (10^9 cells/m^2)" ="bil_cells_per_m2",
     "Cell area % cover" ="cell_area_percent_cov",
     "TOC (g/m^2)" = "toc_g_m2",
@@ -418,8 +588,7 @@ glims_kable <- glacier_polygon_stats %>% mutate(name=name %>% fct_recode(
 glims_kable
 ```
 
-Total TOC: 
-Total TN: 121+/-16 kg Vowell, 83+/-11 Catamount
+
 
 ```{r}
 glims_kable %>% 
@@ -465,23 +634,20 @@ summer_rf <- function(srad_df, delta_albedo_df){
 ```
 
 
-Using S2 mean RGND within bloom polygon
+Using S2 mean RGND within bloom polygon to estimate July-August RF
 
 ```{r}
+# using the interpolated data with assumed start and end points
 s2_interp_d_albedo <- s2_interp %>% 
-  mutate(delta_albedo = 0.9 * rgnd, 
-         delta_albedo_se = 0.17 * rgnd) %>% 
+  mutate( delta_albedo = get_coef(albedo_coefs, "albedo", estimate) * rgnd, 
+          delta_albedo_se = get_coef(albedo_coefs, "albedo", std.error) * rgnd) %>% 
   select(-albedo)
 
 wx_clean %>% 
   select(site, date, srad) %>% 
-  summer_rf(delta_albedo_df = s2_interp_d_albedo)
+  summer_rf(delta_albedo_df = s2_interp_d_albedo) %>% 
+  drop_na()
 ```
-
-Mean July-August RF:
-
-vowell: 10.6 +/- 2 W/m2 
-cat: 7.4 +/- 1.4 W/m2
 
 
 Computing this another way, taking the averages first and then multiplying srad by delta albedo
@@ -490,7 +656,9 @@ Computing this another way, taking the averages first and then multiplying srad 
 mean_summer_srad <- wx_clean %>% 
   filter(month(date) %in% c(7,8)) %>% 
   group_by(site) %>% 
-  summarise(mean(srad))
+  summarise(mean(srad)) %>% 
+  mutate(site = site %>% fct_recode("Vowell"="vowell", "Catamount"="cat")) 
+
 
 # mean summer d albedo
 s2_interp_d_albedo %>% 
@@ -513,26 +681,97 @@ s2_interp_d_albedo %>%
 plot_dat2 <- ts_custom_wide %>% add_column(polygon = "bloom") %>% 
   bind_rows(ts_modis_wide %>% add_column(polygon = "modis")) %>% 
   bind_rows(ts_glims_wide %>% add_column(polygon = "glacier")) %>% 
-  filter(platform %in% c("s2", "l8", "terra")) %>% 
+  filter(platform %in% c("s2", "l8", "terra", "aqua"),
+         # same filtering criteria as above (duplicated code... not the best approach)
+          !(platform=="s2" & site=="cat" & date==ymd("2020-09-08")), 
+         # full polygon was set as "not snow" and therefore set RGND=0
+         !(platform=="aqua" & site == "vowell" & date==ymd("2020-07-22")), 
+         # discard nonsensical obs-- RGND spike on Sep 30 cannot be due to snow algae, b/c there is no snow.
+         !(platform=="aqua" & site == "vowell" & date==ymd("2020-09-30")), 
+         # discard nonsensical high RGND in early June for aqua, only one pixel, no algae in S2 and L8 this early
+         !(platform=="aqua" & site == "vowell" & date<ymd("2020-07-01"))
+         ) %>% 
   mutate(platform = platform %>% 
-           fct_relevel(c("s2", "l8", "terra")) %>%# order factors
            fct_recode("Sentinel-2"="s2",
                       "Landsat-8"="l8",
-                      "MODIS/Terra"="terra")) 
-
+                      "MODIS/Terra"="terra",
+                      "MODIS/Aqua"="aqua")) %>% 
+  mutate(site = site %>% fct_recode("Catamount"="cat", "Vowell"="vowell")) %>% 
+  # add data for illustrative purposes, set to 0 on Jun 1 where data missing
+  bind_rows(tribble(
+    ~platform, ~site, ~date, ~rgnd, ~albedo, ~count, ~thresh, ~polygon,
+    "Sentinel-2", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "Sentinel-2", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "Sentinel-2", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "Sentinel-2", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "Sentinel-2", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "Sentinel-2", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "Landsat-8", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "Landsat-8", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "Landsat-8", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "Landsat-8", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "Landsat-8", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "Landsat-8", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "MODIS/Terra", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "MODIS/Terra", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "MODIS/Terra", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "MODIS/Terra", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "MODIS/Terra", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "MODIS/Terra", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "MODIS/Aqua", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "MODIS/Aqua", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "MODIS/Aqua", "Catamount", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    "MODIS/Aqua", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"bloom",
+    "MODIS/Aqua", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"modis",
+    "MODIS/Aqua", "Vowell", ymd("2020-07-05"), 0,NA,NA,NA,"glacier",
+    
+    "Sentinel-2", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "Sentinel-2", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "Sentinel-2", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "Sentinel-2", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "Sentinel-2", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "Sentinel-2", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "Landsat-8", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "Landsat-8", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "Landsat-8", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "Landsat-8", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "Landsat-8", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "Landsat-8", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "MODIS/Terra", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "MODIS/Terra", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "MODIS/Terra", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "MODIS/Terra", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "MODIS/Terra", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "MODIS/Terra", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "MODIS/Aqua", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "MODIS/Aqua", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "MODIS/Aqua", "Catamount", ymd("2020-09-01"), 0,NA,NA,NA,"glacier",
+    "MODIS/Aqua", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"bloom",
+    "MODIS/Aqua", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"modis",
+    "MODIS/Aqua", "Vowell", ymd("2020-09-01"), 0,NA,NA,NA,"glacier"
+  )) %>% 
+  # order factors last, bind_row() resets the factor order
+  mutate(platform = platform %>% fct_relevel(c("Sentinel-2", "Landsat-8", "MODIS/Terra", "MODIS/Aqua")))
 
 plot_dat2 %>% 
-  mutate(site = site %>% fct_recode("Catamount"="cat", "Vowell"="vowell")) %>% 
   ggplot(aes(x = date, y = rgnd, color = polygon)) +
   facet_grid(rows = vars(site %>% fct_relevel("Vowell")), cols = vars(platform)) +
-  geom_line(stat="smooth", method = "loess", se=FALSE, alpha = 0.7) +
-  geom_point(size = 2, alpha=0.8) +
+  geom_hline(yintercept = 0) +
+  geom_line(stat="smooth", method ="loess", se=FALSE, alpha = 0.7, data = plot_dat2) +#method = "lm", formula = y~poly(x,2)
+  # highlight where data was added
+  geom_point(color = "#0cc10f", alpha = 0.4, shape = 1, size = 3, data = plot_dat2 %>% 
+               filter(date %in% c(ymd("2020-07-05"),ymd("2020-09-01")))) +
+  # hack to double plot to increase the thickness of line
+  geom_point(color = "#0cc10f", alpha = 0.4, shape = 1, size = 4, data = plot_dat2 %>% 
+               filter(date %in% c(ymd("2020-07-05"),ymd("2020-09-01")))) +
+  # the actual data
+  geom_point(size = 2, alpha=0.3, data = plot_dat2 %>% filter(!(date %in% c(ymd("2020-07-05"),ymd("2020-09-01"))))) +
   # geom_line(aes(group=date)) +
   labs(x = "Date", y = "RGND") +
   theme_minimal() +
-  geom_hline(yintercept = 0) +
-  # scale_shape_manual(values=c(3, 4, 7)) +
-  scale_color_manual(values = c("#7fc97f", "#beaed4", "#fdc086"))
+  # scale_shape_manual(values=c(21, 24, 22, 23), guide = "none") +
+  scale_color_manual(values = c("black", "#0cbec1", "#c10cbe")) +
+  ylim(0, 0.04)
 ```
 
 ```{r}
@@ -653,7 +892,8 @@ my_wx <- ts_custom_wide %>%
 wxplt <- my_wx %>% 
   ggplot(aes(x = date, y = value)) +
   facet_grid(rows = vars(name), cols = vars(site), scales = "free") +
-  geom_point(alpha = 0.6, data = my_wx %>% filter(name %in% c("RGND", "MOD10A1 Albedo"))) +
+  geom_point(alpha = 0.6, shape = 0, color = "#619cff", data = my_wx %>% filter(name %in% c("RGND"))) +
+  geom_point(alpha = 0.6, shape = 0, color = "grey30", data = my_wx %>% filter(name %in% c("MOD10A1 Albedo"))) +
   theme_minimal() +
   geom_smooth(color = "red", 
               data = my_wx %>% 

@@ -7,6 +7,7 @@ output: html_notebook
 library(tidyverse)
 library(here)
 library(broom)
+library(janitor)
 library(readxl)
 library(ggpubr)
 library(cowplot)
@@ -19,6 +20,8 @@ albedo <- read_csv(here("data/radiometer/as_bb_albedo.csv"), col_types = cols())
 v_albedo <- read_csv(here("data/radiometer/as_viz_albedo.csv"), col_types = cols()) # visible albedo
 nir_albedo <- read_csv(here("data/radiometer/as_nir_albedo.csv"), col_types = cols()) # NIR albedo
 
+color <- read_csv(here("data/field_sample_meta/final_sample_list.csv"))
+
 # algae abundance (data processed in algae abundance regression)
 cc <- read_csv(here("data/cellcount/cell_long.csv"), col_types = cols()) 
 
@@ -30,19 +33,38 @@ scans <- read_csv(here("data/radiometer/sample_scans.csv"), col_types = cols())
 solar_rad <- read_excel(here("data/PVL_SpectrumCalculator_Whistler_2021-07-31_13:00:00.xlsx"), sheet = 3)
 ```
 
+remove padding zero and "21" from sample ID
+
+```{r}
+shorten_uid <- function(str){
+  site = str %>% str_sub(1,3)
+  num = str %>% str_remove("21.") %>% parse_number()
+  paste0(site, num)
+} 
+
+shorten_uid_wrap <- function(df){
+  df %>% mutate(sample_id = shorten_uid(sample_id), .keep = "unused") 
+}
+```
+
+
+
+
 # Compare duplicate albedo scans
 
 QC
 
 ```{r}
 albedo %>% 
-  mutate(sample_id = sample_id %>% str_remove("21.")) %>% 
-  ggplot(aes(x=  sample_id %>% fct_reorder(albedo), y = albedo )) +
+  shorten_uid_wrap() %>% 
+  left_join(color) %>% 
+  ggplot(aes(x=  sample_id %>% fct_reorder(albedo), y = albedo, color = type)) +
   geom_point(alpha = 0.4) +
   labs(x = "Sample ID", y = "Broadband albedo (350-1340 nm)") +
   ylim(0,1) +
   coord_flip() +
-  theme_minimal()
+  theme_minimal() +
+  scale_color_manual(values =c("black","red","purple", "grey80"))
 ```
 Seems reasonable. Use the mean value for the rest of this analysis
 
@@ -81,7 +103,6 @@ rgnd_wide <- rgnd %>%
 Combine all data into a single data frame
 
 ```{r}
-dirty_snow_samples <- c("bdw9", "whi10", "tri14")
 
 # df containing all data used in this analysis
 dat <- all_albedo %>% 
@@ -89,11 +110,8 @@ dat <- all_albedo %>%
   left_join(rgnd_wide) %>% 
   # shorten the sample ID for plotting
   mutate(sample_id = sample_id %>% str_remove("21.0"),# Remove the 21. from the sample IDs
-         sample_id = sample_id %>% str_remove("21."),
-         # annotate as "white" or "dirty" or "red" snow
-         type = case_when(mean_cell_area_percent <0.01 ~ "white",
-                          sample_id %in% dirty_snow_samples ~ "dirty",
-                          TRUE ~ "red"))
+         sample_id = sample_id %>% str_remove("21.")) %>% 
+  left_join(color)
 dat
 ```
 
@@ -107,7 +125,7 @@ Approach: multiply incoming solar radiation by delta albedo (mean white snow alb
 Tidy the incident solar data
 ```{r}
 srad <- solar_rad %>% 
-  clean_names() %>% 
+  janitor::clean_names() %>% 
   select(wavelength_nm, global_into_module_w_m2_nm) %>% 
   rename(wvl = wavelength_nm)
 
@@ -163,27 +181,23 @@ irf_full
 # plot
 
 
+
 ## plot template function
 ```{r}
 my_plot <- function(dat, x, y, xsd, ysd, formula){
-  x <- enquo(x)
-  y <- enquo(y)
-  xsd <- enquo(xsd)
-  ysd <- enquo(ysd)
-  
   dat %>% 
-    ggplot(aes(y = !!y, x = !!x)) +
+    ggplot(aes(y = {{y}}, x = {{x}})) +
     geom_smooth(method = "lm", se = FALSE, formula = formula, data = dat %>% filter(type=="red"), color = "#F8766D") +
     geom_point(aes(fill = type), color="black", pch = 21, size = 2.4) +
     # the Y axis SD crossbar
-    geom_linerange(aes(ymin = !!y - !!ysd,
-                        ymax = !!y + !!ysd),
+    geom_linerange(aes(ymin = {{y}} - {{ysd}},
+                        ymax = {{y}} + {{ysd}}),
                         alpha = 0.4) +
     # the X axis crossbar
-    geom_linerange(aes(xmin = !!x - !!xsd,
-                     xmax = !!x + !!xsd),
+    geom_linerange(aes(xmin = {{x}} - {{xsd}},
+                     xmax = {{x}} + {{xsd}}),
                   alpha = 0.4) +
-    theme_minimal()
+    theme_minimal() 
 }
 ```
 
@@ -193,16 +207,15 @@ my_plot <- function(dat, x, y, xsd, ysd, formula){
 pa <- my_plot(dat, x = mean_cell_area_percent, y = mean_albedo, xsd = sd_cell_area_percent, ysd = sd_albedo, formula = y~log(x)) +
   labs(x = "Cell area % cover", y = "Broadband albedo", fill = "Snow type", tag = "A") +
   # lims(y = c(0, 1)) +
-  scale_fill_manual(values = c("gray", "#F8766D", "white"))
+  scale_fill_manual(values = c("gray", "#F8766D", "#766df8", "white"))
 pa
 ```
 
 ## B albedo vs RGND
 ```{r}
 pb <- my_plot(dat, x = mean_rgnd, y = mean_albedo, xsd = sd_rgnd, ysd = sd_albedo, formula = y~x) +
-  labs(x = "RGND", y = "Broadband albedo", fill = "Snow type", tag = "B") +
-  # lims(y = c(0, 1)) +
-  scale_fill_manual(values = c("gray", "#F8766D", "white"))
+  labs(x = "RGND", y = "Broadband albedo", fill = "Snow type", tag = "B")  +
+  scale_fill_manual(values = c("gray", "#F8766D", "#766df8", "white"))
 pb
 ```
 
@@ -218,9 +231,11 @@ pb
 
 
 ```{r}
-pc <- my_plot(irf_full, x = mean_cell_area_percent, y = irf, xsd = sd_cell_area_percent, ysd = irf_sd, formula = y~log(x)) +
+pc <- irf_full %>% 
+  drop_na(type) %>% 
+  my_plot(x = mean_cell_area_percent, y = irf, xsd = sd_cell_area_percent, ysd = irf_sd, formula = y~log(x)) +
   labs(y = "IRF (Wm2)", x = "Cell area % coverage", fill = "Snow type", tag = "C") +
-  scale_fill_manual(values = c("gray", "#F8766D"))
+  scale_fill_manual(values = c("gray", "#F8766D", "#766df8"))
 pc
 ```
 
@@ -236,12 +251,7 @@ ggarrange(pa + theme(legend.position = "none"),
           ncol = 1)
 ```
 
-
-```{r}
-# ggsave(here("figs/f3.pdf"))
-```
-
-
+for some reason using ggsave offsets the std error bars. save using Plots GUI
 
 
 # Regression coefficients
@@ -259,10 +269,10 @@ albedo_algae_mod <- lm(mean_albedo ~ log(mean_cell_area_percent), data = mod_dat
 tidy(albedo_algae_mod)
 ```
 
-albedo = (0.66 +/- 0.033)  - 0.078 +/- 0.011 * log(Cell Area Percent Cover)
+albedo = (0.6 +/- 0.03)  - 0.07 +/- 0.01 * log(Cell Area Percent Cover)
 
 ```{r}
-summary(albedo_algae_mod)$r.squared # .80
+summary(albedo_algae_mod)$r.squared # .79
 ```
 
 
@@ -275,13 +285,21 @@ summary(albedo_algae_mod)$r.squared # .80
 albedo_rgnd_mod <- lm(mean_albedo ~ mean_rgnd, data = mod_dat)
 tidy(albedo_rgnd_mod)
 ```
-albedo = 0.61 - 0.90 +/- 0.17 RGND
-delta_albedo = -0.90 +/- 0.17 RGND
+albedo = 0.55 - 0.82 +/- 0.16 RGND
+delta_albedo = - 0.82 +/- 0.16 RGND
 
-(t(17) =-5.2, p=0.0001)
+(t(17) =-5.1, p<0.001)
 
 ```{r}
-summary(albedo_rgnd_mod)$r.squared # 0.65
+albedo_rgnd_mod %>% 
+  tidy() %>% 
+  write_csv(here("data/albedo_coefs.csv"))
+```
+
+
+
+```{r}
+summary(albedo_rgnd_mod)$r.squared # 0.636
 ```
 
 ## C. IRF vs algae area 
@@ -291,10 +309,10 @@ irf_mod <- lm(irf ~ 0 + log(mean_cell_area_percent), data = irf_full %>% filter(
 irf_mod %>% tidy()
 ```
 
-IRF = 64 +/- 3.4 log(frac_red_percent)
+IRF = 64 +/- 3.5 log(frac_red_percent)
 
 ```{r}
-summary(irf_mod)$r.squared
+summary(irf_mod)$r.squared #.96
 ```
 
 
@@ -348,27 +366,24 @@ dat %>%
 
 
 ```{r, fig.width=7, fig.height=7}
-facet_names <- list(
-  'mean_vis_albedo'="Visible (350-700 nm)",
-  'mean_nir_albedo'="NIR (700-1300 nm)",
-  'mean_albedo'="Vis+NIR (350-1300 nm)"
+facet_names <- c(
+  mean_vis_albedo="Visible (350-700 nm)",
+  mean_nir_albedo="NIR (700-1300 nm)",
+  mean_albedo="Full (350-2500 nm)"
 )
-facet_labeller <- function(variable,value){
-  return(facet_names[value])
-}
 
 dat %>% 
-  # format for plotting
   select(type, mean_cell_area_percent, mean_albedo, mean_vis_albedo, mean_nir_albedo) %>% 
   pivot_longer(cols = c(mean_albedo, mean_vis_albedo, mean_nir_albedo)) %>% 
-  ggplot(aes(y = value, x = type)) +
-  facet_grid(rows = vars(name), labeller = facet_labeller) +
+  mutate(name = name %>% fct_relevel("mean_vis_albedo", "mean_nir_albedo")) %>% 
+  ggplot(aes(y = value, x = type, color = type)) +
   geom_boxplot() +
-  # geom_jitter(width = 0.2) +
+  facet_wrap(vars(name), labeller = labeller(name = facet_names)) +
   lims(y = c(0,1)) +
-  labs(y = "Broadband albedo", y = "Snow type") +
-  theme_minimal() #+
-  # geom_point()
+  labs(y = "Broadband albedo", x = "") +
+  # theme_minimal() +
+  scale_x_discrete(labels = c("Dirty","Red","R+D","White")) +
+  scale_color_manual(values = c("black","red","purple","grey70"))
 ```
 ```{r}
 # ggsave(here("figs/bb_albedo_boxplot.png"), height = 8, width = 5)

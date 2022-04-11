@@ -100,10 +100,11 @@ kk <- epi_select %>%
   inner_join(final_list) %>% 
   # convert to local time
   mutate(datetime = datetime - hours(8)) %>% 
-  select(sample_id, type, lat, lon, datetime) 
+  select(sample_id, type, lat, lon, datetime) %>% 
+  rownames_to_column()
 
 kk2 <- kk %>% 
-  kbl(caption = "A. Radiometer samples", col.names = c("Sample ID", "Snow Color", "Latitude", "Longitude", "Date/Time (PST)")) %>% 
+  kbl(caption = "A. Radiometer samples", col.names = c("-", "Sample ID", "Snow Color", "Latitude", "Longitude", "Date/Time (PST)")) %>% 
   kable_classic(full_width = F, html_font = "Cambria") 
 kk2
 
@@ -118,9 +119,9 @@ kk2 %>%
 # the density parameter must come before the input file
 convert \
   -density 300 \
-  ../figs/cat_sample_table.pdf \
+  ../figs/radiometer_sample_table.pdf \
   -sharpen 0x1.0 \
   -quality 100 \
-  ../figs/cat_sample_table.png
+  ../figs/radiometer_sample_table.png
 ```
 

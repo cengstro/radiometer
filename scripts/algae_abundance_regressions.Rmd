@@ -20,6 +20,7 @@ library(ggpubr)
 ```{r}
 cellcount <- read_csv(here("data/cellcount/final_cell.csv"), col_types = cols()) 
 biomass <- read_csv(here("data/biomass/tidy_biomass.csv"), col_types = cols()) 
+color_raw <- read_csv(here("data/field_sample_meta/final_sample_list.csv"))
 
 # convolved sample scans
 as_s2 <- read_csv(here("data/radiometer/as_s2.csv"), col_types = cols())
@@ -133,12 +134,29 @@ This is similar to the duplicate scan comparison in convolve_sample_scans.R but 
 
 Compare the duplicate scan values convolved to RGND
 ```{r}
+color <- color_raw %>%
+  mutate(site = sample_id %>% str_sub(1,3),
+         num = sample_id %>% parse_number(),
+         sample_id = paste0(site, "21.", as.character(num) %>% str_pad(2,pad = "0"))) %>% 
+  select(sample_id, type)
+write_csv(color, here("data/field_sample_meta/final_sample_list_shortname.csv"))
+
 s2_rgnd %>% 
-  ggplot(aes(y = rgnd, x= sample_id %>% fct_reorder(rgnd))) +
+  left_join(color) %>% 
+  ggplot(aes(y = rgnd, x= sample_id %>% fct_reorder(rgnd), color = type)) +
   geom_point() +
   labs(y = "RGND", x = "Sample ID") +
-  coord_flip()
+  coord_flip() +
+  scale_color_manual(values = c("black","red", "purple", "grey90"))
 ```
+
+
+```{r}
+s2_rgnd %>% 
+  filter(sample_id=="whi21.10")
+```
+
+
 
 Take mean value for each sample
 
@@ -252,15 +270,25 @@ tri3 and whi3 have lower cell area than the others, the cells are just smaller.
 
 ## fig 2: RGND predicts Snow Algae cells, area, TOC, TN
 
+
 Use the long data for plotting with facets
 ```{r, fig.width = 3, fig.height = 7}
+# use facetting to plot to automatically align labs
 
+# (could do this manually by setting scales, but it dosen't precisely align the axis due to different fonts at edges, etc)
 vars_to_plot <- c("bil_cells_per_sq_m", "cell_area_percent", "toc_g_per_m2", "tn_mg_per_m2")
 
 fig2_dat <- joined_long_clean %>%
   filter(name %in% vars_to_plot) %>%
   # order the factors, for plotting
   mutate(name = name %>% fct_relevel(vars_to_plot)) # pull(resp_name) %>% levels() #check fct levels
+
+facet_labs = c(
+  bil_cells_per_sq_m = "Algae per area (10^9 cells/m2)",
+  cell_area_percent = "Algal % coverage",
+  toc_g_per_m2 = "TOC (g/m2)",
+  tn_mg_per_m2 = "TN (mg/m2)"
+)
 
 f2 <- fig2_dat %>% 
   ggplot(aes(y = mean, x = rgnd_mean)) +
@@ -282,7 +310,9 @@ f2 <- fig2_dat %>%
   geom_linerange(aes(xmin = rgnd_mean - rgnd_sd,
                    xmax = rgnd_mean + rgnd_sd),
                 alpha = 0.4) +
-  facet_grid(rows = vars(name), scales = "free") +
+  facet_grid(rows = vars(name), # to avoid redundant xlabs use _grid, not _wrap
+             scales = "free", 
+             labeller = labeller(name = facet_labs)) +
   # annotate outliers
   geom_text(aes(label = sample_id), size = 2.5, alpha = 0.5, nudge_x = -0.03,
             data = fig2_dat %>% filter(sample_id %in% c("whi3", "bdw4"))) +
@@ -291,7 +321,7 @@ f2 <- fig2_dat %>%
   labs(x = "RGND") +
   theme(panel.spacing = unit(2, "lines")) # increase spacing between panels
 f2
-ggsave(here("figs/f2.pdf"), width = 3, height = 7) # polish in inkscape
+ggsave(here("figs/figs_v2/3_abundance/biomass.pdf"), width = 3, height = 7) # polish in inkscape
 ```
 The final axis labels should be:
 Percent snow algae cell area
@@ -329,6 +359,14 @@ cell abundance= 22 +/- 3.5 RGND^2 (+/- SE)
 cell area= 694 +/- 85 RGND^2
 TOC= 16 +/- 2.2 RGND
 TN= 365 +/- 48 RGND
+
+
+Export coefficient table for use in biogeography paper
+```{r}
+coefs %>% 
+  write_csv(here("data/abundance_coefs.csv"))
+```
+
 
 
 Compare without constraint of B0 (y intercept)
@@ -394,6 +432,9 @@ joined_wide_clean %>%
   labs(x = "RGND", y = "Snow algae cell area (cm2/L)")
 ```
 
+```{r}
+ggsave(here("figs/compare_vs_ganey.pdf"),width = 7, height = 5)
+```
 
 Ganey : A = 1,449 NDI
 

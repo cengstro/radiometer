@@ -47,7 +47,7 @@ spec_clean_names %>%
 spec_clean_names %>% 
   filter(!is.na(reflect_percent)) %>% 
   count(filename) %>% 
-  mutate(filename = str_split_n(filename, "/", 11)) %>% 
+  mutate(filename = str_split_i(filename, "/", 11)) %>% 
   distinct(filename)
 # all from July 30 -- must be the transects
 
@@ -80,7 +80,7 @@ spec_select
 # # end test
 
 get_scan_id = function(string){
-  sed_num <- string %>% basename() %>% str_split_n("_", 3) %>% str_split_n("\\.", 1)
+  sed_num <- basename(string) %>% str_split_i("_",3) %>% str_split_i("\\.", 1)
   date <- string %>% str_extract("2021_[:alpha:]{3}_[:digit:]{2}") %>% ymd() %>% str_remove_all("-")
   return(paste(date, sed_num, sep = "_"))
 }
@@ -93,12 +93,16 @@ spec_named
 
 
 # remove impossible values ----------------------------------------------------
-spec_lt_1 <- spec_named %>% filter(tgt_ref_ratio<1)
+
+spec_lt_1 <- spec_named %>% 
+  filter(tgt_ref_ratio<1)
+
 # remove incomplete scans
 incomplete_scan_ids <- spec_lt_1 %>% 
   count(scan_id) %>% 
   filter(n<max(n)) %>% 
   pull(scan_id)
+
 spec_complete <- spec_lt_1 %>% 
   filter(!(scan_id %in% incomplete_scan_ids))
 
@@ -108,7 +112,7 @@ spec_complete <- spec_lt_1 %>%
 
 # N scans per date
 spec_date <- spec_complete %>% 
-  mutate(date = scan_id %>% str_split_n("_",1) %>% as_date())
+  mutate(date = scan_id %>% str_split_i("_",1) %>% as_date())
 
 spec_date %>% 
   distinct(scan_id, date) %>% 
@@ -132,9 +136,9 @@ spec_date %>%
 # Figure out the wiggles
 set.seed(234)
 w_num <- spec_date %>% 
-  mutate(num = str_split_n(scan_id, "_", 2)%>% as.numeric()) 
+  mutate(num = str_split_i(scan_id, "_", 2)%>% as.numeric()) 
 w_num%>% group_by(date)%>% distinct(num)
-%>%
+w_num %>%
   nest_by(scan_id, date) %>%
   group_by(date) %>%
   slice_sample(n=40) %>% # sample n per date for easier plotting
@@ -162,13 +166,31 @@ sample_scans %>%
   ggplot(aes(x = wvl, y = tgt_ref_ratio)) +
   geom_line(aes(group = scan_id), alpha = 0.4) +
   facet_wrap(vars(date), ncol = 1)
-# 
+
+sample_scans %>% 
+  drop_na(date) %>% 
+  ggplot(aes(x = wvl, y = rad_ref)) +
+  geom_line(aes(group = scan_id), alpha = 0.4) +
+  facet_wrap(vars(date), ncol = 1)
+# there are two distinct levels of solar radiation, probably due to cloud cover that day
+
+sample_scans %>% 
+  filter(wvl==500) %>% 
+  filter(date=="2021-08-03") %>% 
+  ggplot(aes(rad_ref)) +
+  geom_histogram()
 
 
 
 
-# when we convolve to satellite bands, will remove the water bands etc
-# but dont want to include noisy data into albedo, so remove >1750
+sample_scans %>% 
+  drop_na(date) %>% 
+  ggplot(aes(x = wvl, y = rad_target)) +
+  geom_line(aes(group = scan_id), alpha = 0.4) +
+  facet_wrap(vars(date), ncol = 1)
+
+
+
 sample_scans %>% 
   drop_na(date) %>% 
   filter(wvl<1750) %>%

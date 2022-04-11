@@ -3,6 +3,7 @@ library(jsonlite)
 library(here)
 library(listviewer)
 library(lubridate)
+library(kableExtra)
 
 path <- here("data/field_sample_meta/catamount_transect_wpts.geojson") # downloaded from gaia
 j <- read_json(path)
@@ -32,6 +33,10 @@ tbl <- x %>%
   mutate(sample_id = paste0("cat", parse_number(title) %>% str_pad(width = 2, side="left", pad="0")), 
          .keep="unused", .before = 1) %>% 
   arrange(sample_id)
+
+tbl %>% 
+  write_csv(here("data/field_sample_meta/catamount_transect_wpts.csv"))
+
 
 asdf <- tbl %>%
   mutate(datetime = parse_date_time(time_created, "ymd HMS"), .keep = "unused") %>% 

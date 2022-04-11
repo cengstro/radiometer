@@ -20,13 +20,13 @@ rad <- read_csv(here("data/radiometer/sample_scans.csv"))
 biomass <- read_csv(here("data/biomass/tidy_biomass.csv"))
 cellcount <- read_csv(here("data/cellcount/final_cell.csv"))
 
-# RSRs 
+# RSRs
 s2_rsr_raw <- read_excel(here("data/satellite_rsr/S2-SRF_COPE-GSEG-EOPG-TN-15-0007_3.0.xlsx"), sheet = "Spectral Responses (S2A)") # downloaded from https://sentinels.copernicus.eu/documents/247904/685211/S2-SRF_COPE-GSEG-EOPG-TN-15-0007_3.0.xlsx
 planet_rsr_raw <- read_csv(here("data/satellite_rsr/PlanetScope_RSR_SatID_0c_0d.csv"))
 l8_path <- here("data/satellite_rsr/L8_OLI_RSR.xlsx")
 l8_tabs <- excel_sheets(path = l8_path)[2:10]
 l8_rsr_raw <- map_df(l8_tabs, ~read_excel(path = l8_path, sheet = .x))
-terra_rsr_raw <- read_table(here("data/satellite_rsr/HMODIST_RSRs.txt"), 
+terra_rsr_raw <- read_table(here("data/satellite_rsr/HMODIST_RSRs.txt"),
              col_names = c("wavelength", "RSR_412", "RSR_443", "RSR_469", "RSR_488", "RSR_531", "RSR_551", "RSR_555", "RSR_645", "RSR_667", "RSR_678", "RSR_748", "RSR_859", "RSR_869", "RSR_1240", "RSR_1640", "RSR_2130"),
              skip = 8)
 
@@ -41,7 +41,7 @@ s2_bands_raw <- read_excel(here("data/satellite_rsr/sentinel-2_approx_bands.xlsx
 
 
 rad %>% 
-  filter(wvl<1340) %>% 
+  # filter(wvl<1340) %>% 
   filter(sample_id == "bdw21.06") %>% # uncomment to plot only one scan
   ggplot(aes(x = wvl, y = tgt_ref_ratio)) +
   geom_line(aes(group = scan_id)) +
@@ -90,7 +90,7 @@ smooth.spline(test_data$wvl, test_data$tgt_ref_ratio, nknots = 30) %>%
 nk <- 60
 
 splines <- rad %>%
-  filter(wvl<1340) %>% # only spline smooth 350-1340 nm
+  # filter(wvl<1340) %>% # only spline smooth 350-1340 nm
   drop_na() %>% # smooth spline function dosen't like NA
   group_by(scan_id) %>%
   nest() %>%
@@ -123,6 +123,7 @@ spl_plt_lab <- spl_plt_dat %>%
   filter(wvl==350)
 
 spl_plt_dat %>% 
+  filter(wvl<1500) %>% 
   ggplot(aes(x = wvl)) +
   geom_line(aes(y = tgt_ref_ratio, group = sample_id), size = 1, alpha = 1, color = "blue") +
   geom_line(aes(y = .fitted, group = sample_id), alpha = 1, size = 0.5, color = "red") +
@@ -133,7 +134,7 @@ spl_plt_dat %>%
   ggrepel::geom_text_repel(aes(x = 350, y = tgt_ref_ratio, label = sid), data = spl_plt_lab, size = 3, nudge_x = -10)
 # the chlorophyll 680 feature closely matches the orginal, but we have successfully filtered out the high frequency noise (except for tri 7 and tri8)
 
-ggsave(here("figs/smooth.pdf"), height = 8, width = 7)
+#ggsave(here("figs/smooth.pdf"), height = 8, width = 7)
 
 # measure difference from smooth spline
 splines %>% 
@@ -149,10 +150,12 @@ rad_clean <- splines %>%
   unnest(cols = c(aug, data)) %>% 
   select(scan_id, sample_id, wvl, rad_ref, rad_target, .fitted) %>% 
   rename(smooth_ratio = .fitted) %>% 
-  filter(!(sample_id %in% c("tri21.13", "tri21.08", "tri21.07"))) %>% 
-  group_by(sample_id, wvl) %>% 
-  summarise(rad_ref = mean(rad_ref), rad_target = mean(rad_target), smooth_ratio = mean(smooth_ratio)) %>% 
-  ungroup()
+  filter(!(sample_id %in% c("tri21.13", "tri21.08", "tri21.07")))
+
+# %>% 
+#   group_by(sample_id, scan_id, wvl) %>% 
+#   summarise(rad_ref = mean(rad_ref), rad_target = mean(rad_target), smooth_ratio = mean(smooth_ratio)) %>% 
+#   ungroup()
 
 # use the raw ref/target values for broadband albedo colvolution,
 # use the smoothed ratio for band SR convolutions  
@@ -198,8 +201,8 @@ joined <- rad_clean %>%
 
 # check for missing metadata
 joined %>% 
-  filter(is.na(organic_carbon_mg) | is.na(frac_red_mean)) %>% 
-  distinct(scan_id, sample_id, organic_carbon_mg, frac_red_mean)
+  filter(is.na(toc_g_per_m2) | is.na(frac_red_mean)) %>% 
+  distinct(sample_id, sample_id, toc_g_per_m2, frac_red_mean)
 # missing carbon for whi21.04 (exploded), and missing cellcount+carbon for bdw21.06 (sample exploded)
 
 joined_w_cellct <- joined %>% 
@@ -237,15 +240,15 @@ s2_band_geoms <- s2_bands_raw %>%
          .keep = "unused")
   
 s2_band_plot_data <- s2_band_geoms %>% 
-  slice(2:4, 8) %>% # only show visible and NIR bands for simplicity in this plot
+  slice(2:4) %>% # only show visible and NIR bands for simplicity in this plot
   # mutate(name = if_else(name %in% c("Red","Green","Blue"), str_sub(name, 1, 1), name)) %>%
   # add y values, specify colors for each rectangle
-  add_column(ymin = rep(0, 4),
-             ymax = rep(0.05, 4),
-             color = c("blue", "green", "darkred", "darkgrey"))
+  add_column(ymin = 0,
+             ymax = .05,
+             color = c("blue", "green", "darkred"))#, rep("darkgrey",4)))
 
 band_geoms <- geom_rect(s2_band_plot_data, mapping = aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax), fill = s2_band_plot_data$color, inherit.aes = FALSE, show.legend = FALSE)
-band_text <- geom_text(s2_band_plot_data, mapping = aes(xmin+25, ymin+0.025, label = name), size = 4, color = "white", inherit.aes = FALSE)
+band_text <- geom_text(s2_band_plot_data, mapping = aes(xmin+15, ymin+0.025, label = band), size = 4, color = "white", inherit.aes = FALSE)
 
 # final plot (fig 1)
 p1 + 
@@ -254,8 +257,8 @@ p1 +
   band_text +
   scale_x_continuous(minor_breaks = seq(400 , 1300, 100), breaks = seq(400, 1300, 200)) +
   theme(legend.position = c(0.9, 0.8)) +
-  labs(x = "Wavelength (nm)", y = "Spectral albedo", color = "Snow algae \ncell area \n% coverage", tag = "A")
-ggsave(here("figs/f1A.pdf"), height = 7, width = 9)
+  labs(x = "Wavelength (nm)", y = "Spectral reflectance", color = "Snow algae \ncell area \n% coverage", tag = "A")
+ggsave(here("figs/f1A.png"), height = 7, width = 9)
 
 
 
@@ -422,17 +425,17 @@ rad_as_terra %>% write_csv(here("data/radiometer/as_terra.csv"))
 
 
 
-# Convolute to albedo 350-1350 nm ---------------------------------
+# Convolute to albedo  ---------------------------------
 
 # Take the Riemann sum across range of radiometer 350-1340 nm, as a discrete integral
 
-albedo <- rad_clean_plus %>% 
-  filter(wvl>350, wvl<1340) %>% 
+albedo <- rad_clean %>% 
   group_by(scan_id, sample_id) %>% # keep sample id as grouping variable
   # BB albedo compuated as the ratio of total upwelling to total downwelling radiance
   # where total radiance is the discrete integral from 350-1350 nm
   summarise(sum_ref = sum(rad_ref), sum_tgt = sum(rad_target)) %>% 
-  mutate(albedo = sum_tgt/sum_ref, .keep="unused")
+  mutate(albedo = sum_tgt/sum_ref, .keep="unused") %>% 
+  ungroup()
 
 # check the variation in albedo between scans
 albedo %>% 
@@ -447,11 +450,9 @@ albedo %>%
 # visible albedo ----------------------------------------------------------
 # 300-700 nm, like Lutz 2016
 
-viz_albedo <- rad_clean_plus %>% 
+viz_albedo <- rad_clean %>% 
   filter(wvl>400, wvl<700) %>% 
-  group_by(scan_id, sample_id) %>% # keep sample id as grouping variable
-  # BB albedo compuated as the ratio of total upwelling to total downwelling radiance
-  # where total radiance is the discrete integral from 350-1350 nm
+  group_by(scan_id, sample_id) %>% 
   summarise(sum_ref = sum(rad_ref), sum_tgt = sum(rad_target)) %>% 
   mutate(albedo = sum_tgt/sum_ref, .keep="unused")
 
@@ -461,18 +462,14 @@ viz_albedo %>%
 
 # NIR albedo --------------------------------------------------------------
 
-nir_albedo <- rad_clean_plus %>% 
+nir_albedo <- rad_clean %>% 
   filter(wvl>700, wvl<1300) %>% 
-  group_by(scan_id, sample_id) %>% # keep sample id as grouping variable
-  # BB albedo compuated as the ratio of total upwelling to total downwelling radiance
-  # where total radiance is the discrete integral from 350-1350 nm
+  group_by(scan_id, sample_id) %>% 
   summarise(sum_ref = sum(rad_ref), sum_tgt = sum(rad_target)) %>% 
   mutate(albedo = sum_tgt/sum_ref, .keep="unused")
 
 nir_albedo %>%
   write_csv(here("data/radiometer/as_nir_albedo.csv"))
-
-# daily RF ----------------------------------------------------------------
 
 
 
