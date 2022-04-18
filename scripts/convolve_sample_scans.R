@@ -52,24 +52,19 @@ rad %>%
 
 # QC -----------------------------------------------------
 
-# compare the two replicate scans
+# compare the two replicate target scans
 replicate_comparison <- rad %>% 
-  filter(wvl<1340) %>% 
-  group_by(sample_id, wvl) %>% 
-  summarise(dif = abs(tgt_ref_ratio[1] - tgt_ref_ratio[2])) 
-
-# by wavelength
-replicate_comparison %>% 
-  filter(dif>0.055) %>% 
-  distinct(sample_id)
-
-# on average
-replicate_comparison %>% 
+  group_by(scan_id, sample_id) %>% 
+  summarise(mean_ref = mean(rad_ref, na.rm=TRUE),
+            mean_tgt = mean(rad_target, na.rm=TRUE)) %>% 
+  ungroup() %>% 
   group_by(sample_id) %>% 
-  summarise(mean_dif = mean(dif, na.rm = TRUE)) %>% 
-  arrange(-mean_dif)
+  summarise(tgt_dif_pct = 100 * ( abs(mean_tgt[1]-mean_tgt[2]) / mean_tgt[1] )) %>% 
+  arrange(-tgt_dif_pct)
+replicate_comparison
 
-# all scans within 10% except for tri21.13: scan 2 is 17 % higher than scan1 on average, remove this
+
+# all scans within 10% except for tri21.13: scan 2 is 16 % higher than scan1 averaged across all wvl, remove this
 
 
 

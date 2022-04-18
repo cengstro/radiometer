@@ -36,6 +36,27 @@ epi_select <- raw_epi %>%
          .after = sample_id) 
 epi_select
 ```
+mean density
+
+```{r}
+vol <- pi*5^2*2 # cc
+
+epi_select %>% 
+  mutate(dens_kg_m3 = weight_g/vol * 1000) %>% # convert units, multiply by 1000
+  summarise(mean = mean(dens_kg_m3, na.rm=T), sd = sd(dens_kg_m3, na.rm=T))
+
+```
+
+what percent algael biomass?
+
+```{r}
+epi_select %>% 
+  left_join(biomass_tidy) %>% 
+  mutate(pct = (dry_wt_mg/1000)/ weight_g) %>% # convert to g first
+  select(pct) %>% 
+  arrange(-pct)
+```
+
 
 
 ```{r}

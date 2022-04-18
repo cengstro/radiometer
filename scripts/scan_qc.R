@@ -18,7 +18,7 @@ rgnd <- read_csv(here("data/radiometer/as_s2.csv")) %>%
 
 
 get_scan_id = function(string){
-  sed_num <- string %>% basename() %>% str_split_n("_", 3) %>% str_split_n("\\.", 1)
+  sed_num <- string %>% basename() %>% str_split_i("_", 3) %>% str_split_i("\\.", 1)
   date <- string %>% str_extract("2021_[:alpha:]{3}_[:digit:]{2}") %>% ymd() %>% str_remove_all("-")
   return(paste(date, sed_num, sep = "_"))
 }
@@ -32,8 +32,8 @@ qc <- spec_named %>%
   filter(name %in%c("Time", "Temperature (C)")) %>%
   pivot_wider(names_from = "name", values_from = "value") %>% 
   clean_names() %>% 
-  mutate(calibration_time = time %>% str_split_n(",", 1) %>% parse_date_time("HMS"),
-         measurement_time = time %>% str_split_n(",", 2) %>% parse_date_time("HMS"),
+  mutate(calibration_time = time %>% str_split_i(",", 1) %>% parse_date_time("HMS"),
+         measurement_time = time %>% str_split_i(",", 2) %>% parse_date_time("HMS"),
          delta_time_min = difftime(measurement_time, calibration_time, units="mins") %>% as.numeric()
          ) %>% 
   separate(temperature_c, sep =",", into = c("t1", "t2", "t3", "t4", "t5", "t6")) %>% ##HERE--- what do the temperature sensors mean?
@@ -48,11 +48,18 @@ qc <- spec_named %>%
 
 
 # use splines as a measure of wiggliness
+rad %>% 
+  filter(sample_id %in% c("tri21.07")) %>% 
+  pivot_longer(rad_ref:rad_target) %>% 
+  ggplot(aes(y = value, x = wvl, color = name)) +
+  geom_line()
+
 # test
 test_data <- rad %>%
   filter(scan_id=="20210803_00181", wvl<1340)
 
 nk=60
+
 smooth.spline(test_data$wvl, test_data$tgt_ref_ratio, nknots = nk) %>%
   broom::augment(test_data) %>%
   ggplot(aes(x = wvl)) +
@@ -61,7 +68,6 @@ smooth.spline(test_data$wvl, test_data$tgt_ref_ratio, nknots = nk) %>%
 # end test
 
 splines <- rad %>%
-  filter(wvl<1340) %>% # only spline smooth 350-1340 nm
   drop_na() %>% # smooth spline function dosen't like NA
   group_by(scan_id) %>%
   nest() %>%
@@ -126,12 +132,21 @@ p1
 
 
 # does time of day impact RGND?
-p3 <- dd %>% 
-  left_join(rgnd) %>% 
+mean_rg <- rgnd %>% 
+  group_by(sample_id) %>% 
+  summarise(rgnd = mean(rgnd))
+
+
+dd2 <- dd %>% 
+  left_join(mean_rg)
+
+p3 <- dd2 %>% 
   ggplot(aes(x = measurement_time, y = rgnd, color = site)) +
   geom_point() +
   labs(y = "RGND", x="Time of day", tag="C") +
-  theme(legend.position="none")
+  theme(legend.position="none") +
+  ggrepel::geom_text_repel(aes(label = sid), size =3.5, data = dd2 %>% filter(site=="tri"))
+p3
 
 legend <- cowplot::get_legend(p2)
 ggarrange(p1, p2 +

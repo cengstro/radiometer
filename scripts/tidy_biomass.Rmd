@@ -26,6 +26,8 @@ biomass_tidy <- biomass_raw %>%
          wt_for_tic = tic_mg)
 glimpse(biomass_tidy)
 ```
+
+
 Scale the dry sample weight to account for the 600 uL aliquot used for cellcounts
 
 ```{r}

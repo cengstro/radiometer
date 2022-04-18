@@ -17,6 +17,7 @@ library(zoo)
 library(kableExtra)
 library(GGally)
 library(ggpubr)
+library(broom)
 ```
 
 
@@ -114,6 +115,7 @@ wx_clean <- wx %>%
   
 ```
 
+
 # n pix per image
 
 ```{r}
@@ -136,7 +138,7 @@ ppdat %>%
   geom_line()+
   facet_wrap(vars(platform), scales = "free_y") +
   scale_colour_brewer(palette = "Dark2")+
-  labs(y = "Valid pixel count", x = "Date") +
+  labs(y = "Valid pixel count", x = "Date", tag="A") +
   geom_hline(aes(yintercept = 3), data = ppdat %>% filter(platform %>% str_detect("MODIS"))) +
   geom_hline(aes(yintercept = 15000), data = ppdat %>% filter(platform =="Sentinel-2")) +
   geom_hline(aes(yintercept = 800), data = ppdat %>% filter(platform =="Landsat-8")) 
@@ -171,7 +173,7 @@ count(ts_custom_wide, platform)
 # n obs per platform
 
 ```{r}
-ts_custom_wide %>% 
+n_img_kable <- ts_custom_wide %>% 
   group_by(site, platform) %>% 
   summarise(n_images = n()) %>% 
   ungroup() %>% 
@@ -181,11 +183,32 @@ ts_custom_wide %>%
                                             "MODIS/Terra"="terra",
                                             "MODIS/Aqua"="aqua")) %>% 
   pivot_wider(names_from = site, values_from = n_images) %>% 
-  kbl(caption = "Number of cloud-free satellite images per site used in analysis", col.names = c("Platform", "Catamount", "Vowell")) %>% 
+  kbl(caption = "B. Number of cloud-free satellite images per site used in analysis", col.names = c("Platform", "Catamount", "Vowell")) %>% 
   kable_classic(full_width = F, html_font = "Cambria")
 ```
+```{r}
+n_img_kable %>% 
+  save_kable(here("figs/n_images_table.pdf"))
+```
+```{bash}
+# the density parameter must come before the input file
+convert \
+  -density 300 \
+  ../figs/n_images_table.pdf \
+  -sharpen 0x1.0 \
+  -quality 100 \
+  ../figs/n_images_table.png
+```
+N images July 5 - Sept 1
+```{r}
+ts_custom_wide %>% 
+  filter(date>"2020-07-05", date<"2020-09-01") %>% 
+  group_by(site, platform) %>% 
+  summarise(n_images = n()) %>% 
+  ungroup() %>% 
+  filter(platform=="s2")
 
-
+```
 
 # fig6 plot
 
@@ -531,7 +554,7 @@ ydays_in_summer <- dates_in_summer %>% mutate(date = yday(date)) %>% pull()
 vowell_mod <- loess(albedo ~ yday(date), data = vowell_dat)
 cat_mod <- loess(albedo ~ yday(date), data = cat_dat)
 
-vowell_aug <- vowell_mod %>% augment(vowell_dat)
+vowell_aug <- vowell_mod %>% broom::augment(vowell_dat)
 cat_aug <- cat_mod %>% augment(cat_dat)
 
 cat_aug %>% 
@@ -648,6 +671,84 @@ wx_clean %>%
   summer_rf(delta_albedo_df = s2_interp_d_albedo) %>% 
   drop_na()
 ```
+
+Compute the total energy absorbed by the algae during this time period from DRF
+
+```{r}
+energy <- wx_clean %>% 
+  filter(date > "2020-07-05", date < "2020-09-01") %>% 
+  select(date, srad, dayl) %>% 
+  left_join(s2_interp_d_albedo %>% select(date, site, delta_albedo, delta_albedo_se), by = "date") %>% 
+  mutate(drf = -1* (srad * delta_albedo), # RF should be positive
+         drf_se = srad * delta_albedo_se,
+         j_per_m2 = drf * dayl, # since energy = power (RF) * time (s), and SRF is averaged over a 12 hour day
+        j_per_m2_se = drf_se * dayl) 
+
+
+energy %>% 
+  ggplot(aes(x = date, y = j_per_m2)) +
+  geom_ribbon(aes(ymin = j_per_m2 - j_per_m2_se,
+                  ymax = j_per_m2 + j_per_m2_se, group = site, fill = site), 
+              alpha = 0.2, show.legend=FALSE) +
+  geom_line(aes(color=site)) +
+  theme_minimal() +
+  labs(x = "Date", y = "Energy absorbed by snow algae albedo (MJ/m2)", color = "Site") +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_y_continuous(labels=function(x)x/1000000)
+  
+
+```
+
+```{r}
+snow <- read_csv(here("data/snow_stations.csv"), skip = 5)
+names(snow) <- c("date", "2D09_SD", "2D09_SW", "2C14P_SD", "2C14P_SW", "2A34P_SD", "2A34P_SW")
+snow <- snow %>% mutate(date = date %>% str_sub(1,10) %>% ymd())
+
+snow_long <- snow %>% 
+  pivot_longer(-date, values_drop_na = TRUE) %>% 
+  separate(name, c("site", "name")) %>% 
+  group_by(date, site, name) %>% 
+  summarise(value=mean(value)) %>% 
+  ungroup()
+
+snow_long %>%
+  mutate(year = year(date)) %>% 
+  group_by(site) %>% 
+  summarise(min(year), max(year))
+
+snow_long %>%
+  pivot_wider() %>% 
+  mutate(percent = (SW/SD)*100, month = as.factor(month(date))) %>% 
+  filter(month %in% 1:5) %>% 
+  ggplot(aes(x = month, y  = percent)) +
+  geom_boxplot(aes(group = month)) +
+  facet_wrap(vars(site)) +
+  labs(y = "Percent water")
+  
+```
+
+
+
+
+The total energy delivered:
+```{r}
+net_energy <- energy %>% 
+  group_by(site) %>% 
+  summarise(sum_algal_energy = sum(j_per_m2), sum_algal_se = sum(j_per_m2_se), sum_srad = sum((srad*dayl)))
+
+net_energy
+
+latent_heat_snow <- 3.3*10^5 #J/kg
+snow_density <- 500 #kg/m3 
+
+net_energy %>% 
+  pivot_longer(-site) %>% 
+  mutate(snowmelt_eq_kg = value / latent_heat_snow,# in kg water / m2
+         snowdepth_eq_m = snowmelt_eq_kg/snow_density)
+```
+
+Convert this per total area?
 
 
 Computing this another way, taking the averages first and then multiplying srad by delta albedo
@@ -870,9 +971,16 @@ raw_vals_tbl %>%
 # weather/albedo metadata
 
 
+
 ```{r, fig.height = 10, fig.width=8}
+s2_for_wx_plot <- s2_interp %>% 
+  filter(date>="2020-07-05", date<="2020-09-01") %>% 
+  mutate(name=as.factor("Sentinel-2 RGND")) %>% 
+  rename(value=rgnd) %>% 
+  select(site, date, name, value)
+
 my_wx <- ts_custom_wide %>% 
-  filter(platform %in% c("terra", "terraSnow")) %>% 
+  filter(platform %in% c("terraSnow")) %>% 
   select(site, date, rgnd, albedo) %>% 
   pivot_longer(-site:-date, values_drop_na =TRUE) %>% 
   pivot_wider() %>% 
@@ -882,28 +990,22 @@ my_wx <- ts_custom_wide %>%
   # select(-site) %>%
   # summarise(across(everything(), list(mean = mean), .names = "{.col}")) %>% 
   pivot_longer(-date:-site, values_drop_na=TRUE) %>%
-  mutate(name = name %>% fct_relevel("rgnd", "albedo", "tmax", "tmin", "prcp", "srad") %>% 
-           fct_recode("RGND"="rgnd", "MOD10A1 Albedo"="albedo", "Max. Temp C"="tmax", "Min. Temp C"="tmin", "Precip. (mm)" = "prcp", 
+  bind_rows(s2_for_wx_plot) %>% 
+  mutate(name = name %>% fct_relevel("Sentinel-2 RGND", "albedo", "tmax", "tmin", "prcp", "srad") %>% 
+           fct_recode("MOD10A1 Albedo"="albedo", "Max. Temp C"="tmax", "Min. Temp C"="tmin", "Precip. (mm)" = "prcp", 
                       "Solar radiation (w/m2)"="srad"),
          site = site %>% fct_recode("Vowell"="vowell", "Catamount"="cat") %>% fct_relevel("Vowell")) %>% 
-  drop_na()
-
+  drop_na() %>% 
+  filter(name!="dayl")
 
 wxplt <- my_wx %>% 
   ggplot(aes(x = date, y = value)) +
   facet_grid(rows = vars(name), cols = vars(site), scales = "free") +
-  geom_point(alpha = 0.6, shape = 0, color = "#619cff", data = my_wx %>% filter(name %in% c("RGND"))) +
-  geom_point(alpha = 0.6, shape = 0, color = "grey30", data = my_wx %>% filter(name %in% c("MOD10A1 Albedo"))) +
+  geom_line(alpha = 1, size=1, color = "#f8766d", data = my_wx %>% filter(name %in% c("Sentinel-2 RGND"))) +
+  geom_point(alpha = 0.7, shape = 0, color = "grey30", data = my_wx %>% filter(name %in% c("MOD10A1 Albedo"))) +
   theme_minimal() +
-  geom_smooth(color = "red", 
-              data = my_wx %>% 
-                filter(name =="RGND") %>% 
-                # set Jul 1 to 0
-                bind_rows(tibble(date = ymd("2020-07-01", "2020-07-02", "2020-07-03", "2020-07-04", "2020-07-05"), 
-                                 name = "RGND", value=0)) %>% drop_na() %>% 
-                mutate(name = name %>% fct_relevel("RGND"))) +
-  geom_smooth(data = my_wx %>% filter(name =="MOD10A1 Albedo"), color = "black") +
-  geom_line(alpha = 0.5, data = my_wx %>% filter(!(name %in% c("RGND", "MOD10A1 Albedo")))) +
+  geom_line(stat="smooth", size=1, data = my_wx %>% filter(name =="MOD10A1 Albedo"), color = "grey50") +
+  geom_line(alpha = 0.5, data = my_wx %>% filter(!(name %in% c("Sentinel-2 RGND", "MOD10A1 Albedo")))) +
   # add horiz line to some facets
   geom_hline(aes(yintercept = 0), data = my_wx %>% filter(!(name %in% c("MOD10A1 Albedo", "Solar radiation (w/m2)"))) ) +
   labs(y="",x="Date")
@@ -912,20 +1014,25 @@ wxplt
 
 
 ```{r}
-# ggsave(here("figs/wx_plot.png"),height =9, width = 8 )
+ggsave(here("figs/wx_plot.pdf"),height =9, width = 8 )
 ```
 
 # Applying G-D melt model, algae melt = 0.13 sqrt(area in cm2/l)
 
 ```{r}
 melt <- function(rgnd){
-  cell_dens <- rgnd * 1234 # my model, in cm2/L
-  0.13*sqrt(cell_dens)
+  cell_dens <- rgnd * 1727 # my model, in cm2/L
+  0.13*sqrt(cell_dens) # G-D melt model, cm water eq./day
 }
-melt(0.016) # vowell
-melt(0.021) # cat
+
+s2_interp %>% 
+  mutate(melt = melt(rgnd)) %>% 
+  group_by(site) %>% 
+  summarise(melt = sum(melt))
 
 ```
+46 cm
+
 ```{r}
 melt(0.05)# 10.2 mm SWE/day
 melt(0.039) #9 mm SWE/day
