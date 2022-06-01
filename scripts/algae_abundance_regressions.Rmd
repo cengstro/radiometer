@@ -203,6 +203,10 @@ joined_wide <- joined_long %>%
   pivot_wider(names_from = "name", values_from = "mean") %>% 
   rename(rgnd = rgnd_mean)
 ```
+```{r}
+joined_wide %>% 
+  arrange(-tic_mg_per_m2)
+```
 
 
 
@@ -337,10 +341,18 @@ Total nitrogen (mg/m^2)
 
 lm models
 ```{r}
-cell_mod <- lm(bil_cells_per_sq_m ~ 0 + I(rgnd^2), data = joined_wide_clean) # set intercept to 0 for simplicity
-frac_mod <- lm(cell_area_percent ~ 0 + I(rgnd^2), data = joined_wide_clean) # set intercept to 0 for simplicity
+cell_mod <- lm(bil_cells_per_sq_m ~ 0 + I(rgnd^2), data = joined_wide_clean) 
+frac_mod <- lm(cell_area_percent ~ 0 + I(rgnd^2), data = joined_wide_clean) 
 toc_mod <- lm(toc_g_per_m2 ~ rgnd, data = joined_wide_clean)
 tn_mod <- lm(tn_mg_per_m2 ~ rgnd, data = joined_wide_clean)
+```
+
+
+```{r}
+lm(bil_cells_per_sq_m ~ 0 + I(rgnd^2), data = joined_wide_clean) %>% AIC()
+lm(bil_cells_per_sq_m ~ I(rgnd^2), data = joined_wide_clean) %>% AIC()
+lm(cell_area_percent ~ 0 + I(rgnd^2), data = joined_wide_clean) %>% AIC()
+lm(cell_area_percent ~ I(rgnd^2), data = joined_wide_clean) %>% AIC()
 ```
 
 ## lm coefs

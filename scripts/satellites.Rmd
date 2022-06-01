@@ -25,7 +25,7 @@ Not the most elegant solution to download each time series into a seperate csv, 
 
 ```{r}
 # modis polygon
-ts_modis <- dir_ls(here("data/google_earth_engine/modis_grid_cells"), regexp = ".csv$") %>% 
+ts_modis <- dir_ls(here("data/google_earth_engine/modis_grid_cells"), regexp = ".csv$") %>%
   map_df(read_csv, id = "filename", col_types = cols())
 
 # bloom polygon
@@ -105,7 +105,12 @@ ts_glims_wide <- ts_glims %>%
 
 hist_clean <- hist %>% 
   clean_names() %>% 
-  mutate(site = basename(filename) %>% str_split_i("_", 1), .keep = "unused")
+  mutate(site = basename(filename) %>% str_split_i("_", 1), .keep = "unused") %>% 
+  mutate(type = case_when(str_detect(site, "Algae")~"algae",
+                          TRUE ~ as.character(site))) %>% 
+  rename(rgnd = band_value, count = true_rgnd_count) %>% 
+  select(type, rgnd, count) %>% 
+  drop_na(count)
 
 wx_clean <- wx %>% 
   my_tidy() %>% 
@@ -428,7 +433,7 @@ bloom_polygon_area <- tribble(
 
 ```{r}
 get_max_s2_rgnd <- function(df){
-  df %>% 
+  df %>% #ts_custom_wide %>% 
   filter(platform == "s2") %>% 
   group_by(site) %>% 
   summarise(rgnd = max(rgnd, na.rm = TRUE))
@@ -481,7 +486,7 @@ estimate_bloom_stats <- function(rgnd_df, polygon_area_df){
 }
 
 bloom_polygon_stats <- ts_custom_wide %>% 
-  get_max_s2_rgnd() %>% 
+  get_max_s2_rgnd() %>% # vowell max = 7-18, cata max = 7-30
   estimate_bloom_stats(polygon_area_df = bloom_polygon_area)
 
 
@@ -886,27 +891,35 @@ plot_dat2 %>%
 
 # RGND histogram (s2 density plot)
 
-```{r}
-hist_clean %>% 
-  group_by(site) %>% 
-  summarise(max(band_value))
-```
 
 ```{r}
-grid_cell_count <- hist_clean %>% 
-  group_by(site) %>% 
-  summarise(grid_cell_count = sum(rgnd_count, na.rm = TRUE))
-grid_cell_count
+make_reps <- function(df){
+  rep(df$rgnd, df$count)
+}
 
-hist_clean %>% 
-  drop_na(rgnd_count) %>% # remove empty bins
-  left_join(grid_cell_count) %>% 
-  mutate(percent_algae_area = (rgnd_count / grid_cell_count) *100) %>% 
-  ggplot(aes(x = band_value, y = percent_algae_area)) +
-  geom_line() +
-  facet_grid(rows = vars(site)) +
-  labs(y = "% algae area", x = "RGND")
+hist_raw <- hist_clean %>% 
+  # round decimels
+  mutate(count = round(count, 0)) %>% 
+  # expand n rows with rgnd val by count
+  group_by(type) %>% 
+  nest() %>% 
+  mutate(value = map(data, make_reps), .keep="unused") %>% 
+  unnest(value)
+
+dim(hist_raw)
+hist_plot <- hist_raw %>% 
+  mutate(type = if_else(type=="dirtySnow", "dust on snow", type)) %>% 
+  ggplot(aes(value)) +
+  geom_histogram(bins = 100) +
+  facet_wrap(vars(type), ncol=1, scales="free_y") +
+  theme_minimal() +
+  labs(y = "Pixel count", x = "RGND") +
+  geom_vline(xintercept = 0, color = "blue")
+hist_plot
 ```
+
+
+
 ```{r}
 # reverse engineer the raw obs, hacky
 raw_vals_vec_cat <- hist_clean %>% 

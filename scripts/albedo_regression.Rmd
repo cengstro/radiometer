@@ -180,14 +180,27 @@ irf_full
 
 # plot
 
+```{r}
+dat %>% 
+  filter(type %in% c("red")) %>% 
+  drop_na(mean_cell_area_percent, mean_albedo) %>%
+  ggplot(aes(y = mean_albedo, x=mean_cell_area_percent)) +
+  geom_point()+
+  geom_smooth(method = "lm", formula = y~log(x))
+```
 
 
 ## plot template function
 ```{r}
+theme_set(theme_minimal())
+
+
 my_plot <- function(dat, x, y, xsd, ysd, formula){
   dat %>% 
+    filter(type %in% c("white", "red")) %>% 
+    drop_na({{x}},{{y}},{{xsd}},{{ysd}}) %>% # geom_smooth dosent accept NA
     ggplot(aes(y = {{y}}, x = {{x}})) +
-    geom_smooth(method = "lm", se = FALSE, formula = formula, data = dat %>% filter(type=="red"), color = "#F8766D") +
+    geom_smooth(method = "lm", se = FALSE, color = "#F8766D", formula = formula, data = dat %>% filter(type=="red")) +
     geom_point(aes(fill = type), color="black", pch = 21, size = 2.4) +
     # the Y axis SD crossbar
     geom_linerange(aes(ymin = {{y}} - {{ysd}},
@@ -196,18 +209,21 @@ my_plot <- function(dat, x, y, xsd, ysd, formula){
     # the X axis crossbar
     geom_linerange(aes(xmin = {{x}} - {{xsd}},
                      xmax = {{x}} + {{xsd}}),
-                  alpha = 0.4) +
-    theme_minimal() 
+                  alpha = 0.4)
 }
 ```
 
 
 ## A. albedo vs algae abund
 ```{r}
-pa <- my_plot(dat, x = mean_cell_area_percent, y = mean_albedo, xsd = sd_cell_area_percent, ysd = sd_albedo, formula = y~log(x)) +
-  labs(x = "Cell area % cover", y = "Broadband albedo", fill = "Snow type", tag = "A") +
-  # lims(y = c(0, 1)) +
-  scale_fill_manual(values = c("gray", "#F8766D", "#766df8", "white"))
+pa <- my_plot(dat, 
+              x = mean_cell_area_percent, 
+              y = mean_albedo, 
+              xsd = sd_cell_area_percent,
+              ysd = sd_albedo, 
+              formula = y~log(x)) +
+  labs(x = "Cell area % cover", y = "Broadband albedo", fill = "Snow color", tag = "A") +
+  scale_fill_manual(values = c("#F8766D", "white"))
 pa
 ```
 
@@ -215,16 +231,9 @@ pa
 ```{r}
 pb <- my_plot(dat, x = mean_rgnd, y = mean_albedo, xsd = sd_rgnd, ysd = sd_albedo, formula = y~x) +
   labs(x = "RGND", y = "Broadband albedo", fill = "Snow type", tag = "B")  +
-  scale_fill_manual(values = c("gray", "#F8766D", "#766df8", "white"))
+  scale_fill_manual(values = c("#F8766D", "white"))
 pb
 ```
-
-
-
-
-
-
-
 
 
 ## C. algae abund vs IRF
@@ -233,22 +242,22 @@ pb
 ```{r}
 pc <- irf_full %>% 
   drop_na(type) %>% 
-  my_plot(x = mean_cell_area_percent, y = irf, xsd = sd_cell_area_percent, ysd = irf_sd, formula = y~log(x)) +
+  my_plot(x = mean_cell_area_percent, y = irf, xsd = sd_cell_area_percent, ysd = irf_sd, formula = y~0+ log(x)) +
   labs(y = "IRF (Wm2)", x = "Cell area % coverage", fill = "Snow type", tag = "C") +
-  scale_fill_manual(values = c("gray", "#F8766D", "#766df8"))
+  scale_fill_manual(values = c("#F8766D"))
 pc
 ```
 
 
 ## Combine panels (Fig 3)
-```{r, fig.width = 3, fig.height=9}
+```{r}
 legend <- cowplot::get_legend(pa)
 
-ggarrange(pa + theme(legend.position = "none"), 
+all_albedo_panels <- ggarrange(pa + theme(legend.position = "none"), 
           pb + theme(legend.position = "none"), 
           pc + theme(legend.position = "none"), 
-          legend,
-          ncol = 1)
+          legend)
+all_albedo_panels
 ```
 
 for some reason using ggsave offsets the std error bars. save using Plots GUI

@@ -42,7 +42,7 @@ s2_bands_raw <- read_excel(here("data/satellite_rsr/sentinel-2_approx_bands.xlsx
 
 rad %>% 
   # filter(wvl<1340) %>% 
-  filter(sample_id == "bdw21.06") %>% # uncomment to plot only one scan
+  # filter(sample_id == "bdw21.06", wvl<=1300) %>% # uncomment to plot only one scan
   ggplot(aes(x = wvl, y = tgt_ref_ratio)) +
   geom_line(aes(group = scan_id)) +
   geom_text(aes(label = sample_id), data = rad %>% filter(wvl==350))
@@ -190,9 +190,14 @@ cellcount_mean <- cellcount %>%
   summarise(frac_red_mean = mean(frac_red)) %>% 
   select(sample_id, frac_red_mean)
 
-joined <- rad_clean %>% 
+rad_mean <- rad_clean %>% 
+  group_by(sample_id, wvl) %>% 
+  summarise(smooth_ratio= mean(smooth_ratio))
+
+joined <- rad_mean %>% 
   left_join(cellcount_mean) %>% 
-  left_join(biomass)
+  left_join(biomass) %>% 
+  filter(wvl<=1300)
 
 # check for missing metadata
 joined %>% 
@@ -201,7 +206,9 @@ joined %>%
 # missing carbon for whi21.04 (exploded), and missing cellcount+carbon for bdw21.06 (sample exploded)
 
 joined_w_cellct <- joined %>% 
-  drop_na(frac_red_mean)
+  drop_na(frac_red_mean) %>% 
+  # remove dirty snow samples
+  filter(!(sample_id %in% c("whi21.10", "tri21.14"))) 
 
 p1 <- joined_w_cellct %>% 
   ggplot(aes(x = wvl, y = smooth_ratio, colour = frac_red_mean)) +
@@ -252,8 +259,8 @@ p1 +
   band_text +
   scale_x_continuous(minor_breaks = seq(400 , 1300, 100), breaks = seq(400, 1300, 200)) +
   theme(legend.position = c(0.9, 0.8)) +
-  labs(x = "Wavelength (nm)", y = "Spectral reflectance", color = "Snow algae \ncell area \n% coverage", tag = "A")
-ggsave(here("figs/f1A.png"), height = 7, width = 9)
+  labs(x = "Wavelength (nm)", y = "Spectral reflectance", color = "Algal cell \narea % \ncoverage", tag = "A")
+ggsave(here("figs/figs_v2/f1A.png"), height = 7, width = 9)
 
 
 
@@ -264,7 +271,7 @@ s2_rsr <- s2_rsr_raw %>%
   janitor::clean_names() %>% 
   rename(wvl = sr_wl) %>% 
   pivot_longer(-wvl, names_to = "band", values_to = "rsr") %>% 
-  mutate(band = band %>% str_split_n("_", 4))
+  mutate(band = band %>% str_split_i("_", 4))
 
 convolve_to_band <- function(rad = rad_clean_plus, rsr){
   # compute max possible value for each band
@@ -420,7 +427,7 @@ rad_as_terra %>% write_csv(here("data/radiometer/as_terra.csv"))
 
 
 
-# Convolute to albedo  ---------------------------------
+# Convolve to albedo  ---------------------------------
 
 # Take the Riemann sum across range of radiometer 350-1340 nm, as a discrete integral
 
@@ -440,6 +447,27 @@ albedo %>%
 
 albedo %>%
   write_csv(here("data/radiometer/as_bb_albedo.csv"))
+
+
+
+# What if we do as average? like williamson, khan?
+
+average_method <- rad_clean %>% 
+  group_by(scan_id, sample_id) %>% 
+  summarise(albedo = mean(smooth_ratio)) %>% 
+  ungroup()
+
+average_method %>% 
+  ggplot(aes(albedo)) +
+  geom_histogram()
+
+albedo %>% 
+  ggplot(aes(albedo)) +
+  geom_histogram()
+
+
+
+# the average method ignores the lower energy at higher wavelengths!?! Williamson and khan were wrong. 
 
 
 # visible albedo ----------------------------------------------------------

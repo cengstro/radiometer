@@ -16,7 +16,7 @@ library(kableExtra)
 
 raw_epi <- read_csv(here("data/field_sample_meta/form-1__radiometer.csv"))
 final_list <- read_csv(here("data/field_sample_meta/final_sample_list.csv"))
-
+biomass_tidy <- read_csv(here("data/biomass/tidy_biomass.csv"))
 glimpse(raw_epi)
 
 epi_select <- raw_epi %>% 
@@ -47,13 +47,12 @@ epi_select %>%
 
 ```
 
-what percent algael biomass?
+dry:wet mass ratio
 
 ```{r}
 epi_select %>% 
   left_join(biomass_tidy) %>% 
-  mutate(pct = (dry_wt_mg/1000)/ weight_g) %>% # convert to g first
-  select(pct) %>% 
+  mutate(pct = (mass_g_per_m2)/ weight_g) %>% 
   arrange(-pct)
 ```
 
@@ -122,6 +121,8 @@ kk <- epi_select %>%
   # convert to local time
   mutate(datetime = datetime - hours(8)) %>% 
   select(sample_id, type, lat, lon, datetime) %>% 
+  filter(!(type %in% c("dirty", "red+dirt"))) %>% 
+  arrange(datetime) %>% 
   rownames_to_column()
 
 kk2 <- kk %>% 

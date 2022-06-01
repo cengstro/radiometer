@@ -6,7 +6,7 @@ library(here)
 library(lubridate)
 library(janitor)
 library(broom)
-library(gridExtra)
+library(ggpubr)
 
 sed_paths <- dir_ls(here("data/radiometer/raw/"), recurse = TRUE, regexp = ".sed$")
 rad <- read_csv(here("data/radiometer/sample_scans.csv"))
@@ -15,6 +15,7 @@ spec_meta <- sed_paths %>% # SLOW
 rgnd <- read_csv(here("data/radiometer/as_s2.csv")) %>% 
   mutate(rgnd = (b4-b3)/(b4+b3)) %>% 
   select(sample_id, rgnd)
+albedo <- read_csv(here("data/radiometer/as_bb_albedo.csv"))
 
 
 get_scan_id = function(string){
@@ -45,9 +46,13 @@ qc <- spec_named %>%
          .keep="unused")
   # write_csv(here("data/radiometer/scan_qc.csv"))
 
+# total energy arriving on ground per steridian
+rad %>% group_by(scan_id) %>% summarise(sum = sum(rad_ref)) %>% arrange(-sum)
+# roughly a quarter of the solar constant (irradiance, around 1000 W/m2)
+# https://en.wikipedia.org/wiki/Solar_irradiance#Irradiance_on_Earth's_surface
 
 
-# use splines as a measure of wiggliness
+# view plot of incoming vs reflected radiance
 rad %>% 
   filter(sample_id %in% c("tri21.07")) %>% 
   pivot_longer(rad_ref:rad_target) %>% 
