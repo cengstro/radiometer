@@ -434,8 +434,7 @@ rad_as_terra %>% write_csv(here("data/radiometer/as_terra.csv"))
 
 albedo <- rad_clean %>% 
   group_by(scan_id, sample_id) %>% # keep sample id as grouping variable
-  # BB albedo compuated as the ratio of total upwelling to total downwelling radiance
-  # where total radiance is the discrete integral from 350-1350 nm
+  # BB albedo computed as the ratio of total upwelling to total downwelling radiance
   summarise(sum_ref = sum(rad_ref), sum_tgt = sum(rad_target)) %>% 
   mutate(albedo = sum_tgt/sum_ref, .keep="unused") %>% 
   ungroup()
