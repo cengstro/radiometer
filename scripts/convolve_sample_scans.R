@@ -333,7 +333,7 @@ simple_cell <- cellcount %>%
   group_by(sample_id) %>% 
   summarise(frac_red = mean(frac_red))
 
-rad_as_s2_band %>% 
+rad_as_s2 %>% 
   select(-scan_id, -b1, -b9) %>% # remove 60 m bands
   pivot_longer(-sample_id) %>% 
   group_by(sample_id, name) %>% 
@@ -349,7 +349,9 @@ rad_as_s2_band %>%
   # geom_linerange(aes(ymin = mean - sd, # sd bars between the duplicate scans
   #                   ymax = mean + sd))
 
-
+rad_as_s2 %>% 
+  select(sample_id, b1, b2, b3, b4, b5, b6, b7) %>% 
+  filter(sample_id == "bdw21.07")
 
   
 # convolve to Planet ---------------
@@ -429,7 +431,6 @@ rad_as_terra %>% write_csv(here("data/radiometer/as_terra.csv"))
 
 # Convolve to albedo  ---------------------------------
 
-# Take the Riemann sum across range of radiometer 350-1340 nm, as a discrete integral
 
 albedo <- rad_clean %>% 
   group_by(scan_id, sample_id) %>% # keep sample id as grouping variable
